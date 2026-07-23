@@ -1,1 +1,29 @@
-
+{
+  "version": "2.0",
+  "global_interval_seconds": 12,
+  "rotation_mode": "random",
+  "cache_ttl_seconds": 43200,
+  "ads": [
+    {
+      "title": "عرض خاص على المطابخ",
+      "description": "خصم 20% لمدة محدودة",
+  
+      "image": "https://i.ibb.co/LXLdnbMw/Gemini-Generated-Image-sm7mc3sm7mc3sm7m-removebg-preview.png",
+      "link": "https://wa.me/201204279606",
+      "countries": ["EG", "SA"],
+      "weight": 3,
+      "duration_seconds": 15,
+      "start_date": "2026-04-01",
+      "end_date": "2026-05-01"
+    },
+    {
+      "title": "أبواب كلاسيكية",
+      "description": "تشكيلة جديدة",
+      "image": "https://i.ibb.co/LXLdnbMw/Gemini-Generated-Image-sm7mc3sm7mc3sm7m-removebg-preview.png",
+      "link": "https://wa.me/201204279606",
+      "countries": ["GLOBAL"],
+      "weight": 1,
+      "duration_seconds": 8
+    }
+  ]
+}
