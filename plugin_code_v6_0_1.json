@@ -4052,5 +4052,5 @@ module MHDESIGN
 
     file_loaded(FILE_LOADED_KEY)
   end
-end"  // كود روبي مشفر بـ base64
+end"
 }
