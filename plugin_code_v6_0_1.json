@@ -1,5 +1,6 @@
 {
-  "main_code": "# encoding: UTF-8
+  "main_code": "
+# encoding: UTF-8
 require 'sketchup.rb'
 require 'net/http'
 require 'uri'
