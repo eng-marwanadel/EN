@@ -9,8 +9,8 @@
     },
     {
       "email": "user1",
-      "password": "pass1",
-      "device_id": "123",
+      "password": "user1",
+      "device_id": "9dc853da-42e6-458d-9ef1-f2b5c1036d1b",
       "expiry_date": "2030-12-31",
       "active": true
     },
