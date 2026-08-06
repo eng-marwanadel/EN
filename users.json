@@ -4,14 +4,14 @@
       "email": "MARWAN",
       "password": "MARWAN",
       "device_id": "fe8f2cce-5eae-453d-a752-469fe13ed00b",
-      "expiry_date": "2030303030303026-12-31",
+      "expiry_date": "2126-08-31",
       "active": true
     },
     {
       "email": "rody",
       "password": "rody",
       "device_id": "68119d4f-d6e6-4164-a816-f3d126afa237",
-      "expiry_date": "20330300-12-31",
+      "expiry_date": "2126-08-31",
       "active": true
     },
     {
