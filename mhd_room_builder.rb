@@ -7,598 +7,2023 @@ require 'json'
 require 'tmpdir'
 require 'zlib'
 begin
-  require File.join(__dir__, 'language', 'language_engine')
+require File.join(__dir__, 'language', 'language_engine')
 rescue LoadError
 end
 begin
-  require 'securerandom'
+require 'securerandom'
 rescue LoadError
 end
 
 module MHD_RoomBuilder_Context
-  extend self
+extend self
 
-  MENU_BUILD = 'بناء الحوائط'
-  DICT = 'MHD_ROOM_BUILDER'
-  PREF_KEY = 'MHD_ROOM_BUILDER_UI'
-  LOGO_URL = 'https://mhdesign-eg.com/SKETCHUP/components/logo3.png'
+MENU_BUILD = 'بناء الحوائط'
+DICT = 'MHD_ROOM_BUILDER'
+PREF_KEY = 'MHD_ROOM_BUILDER_UI'
+LOGO_URL = 'https://mhdesign-eg.com/SKETCHUP/components/logo3.png'
 
-  # -------------------------
-  # Helpers
-  # -------------------------
-  def ts(text)
-    source = text.to_s
-    return source unless defined?(MHDESIGN::Language) && MHDESIGN::Language.respond_to?(:load_dictionary)
-    data = MHDESIGN::Language.load_dictionary
-    map = data['room_builder']
-    return source unless map.is_a?(Hash)
-    exact = map[source]
-    return exact.to_s unless exact.nil? || exact.to_s.empty?
-    result = source.dup
-    map.keys.sort_by { |key| -key.to_s.length }.each do |key|
-      next if key.to_s.empty?
-      result = result.gsub(key.to_s, map[key].to_s)
+# -------------------------
+# Helpers
+# -------------------------
+def ts(text)
+source = text.to_s
+return source unless defined?(MHDESIGN::Language) && MHDESIGN::Language.respond_to?(:load_dictionary)
+data = MHDESIGN::Language.load_dictionary
+map = data['room_builder']
+return source unless map.is_a?(Hash)
+exact = map[source]
+return exact.to_s unless exact.nil? || exact.to_s.empty?
+result = source.dup
+map.keys.sort_by { |key| -key.to_s.length }.each do |key|
+next if key.to_s.empty?
+result = result.gsub(key.to_s, map[key].to_s)
+end
+result
+rescue
+text.to_s
+end
+
+def ui_direction
+if defined?(MHDESIGN::Language) && MHDESIGN::Language.respond_to?(:direction)
+MHDESIGN::Language.direction
+else
+'rtl'
+end
+rescue
+'rtl'
+end
+
+def ui_locale
+if defined?(MHDESIGN::Language) && MHDESIGN::Language.respond_to?(:current)
+MHDESIGN::Language.current
+else
+'ar_EG'
+end
+rescue
+'ar_EG'
+end
+
+def enabled_value?(value)
+%w[yes true on 1 نعم].include?(value.to_s.strip.downcase)
+end
+
+def longitudinal_value?(value)
+%w[longitudinal طولي].include?(value.to_s.strip.downcase)
+end
+
+def tag(model, name)
+model.layers[name] || model.layers.add(name)
+end
+
+def uuid
+defined?(SecureRandom) ? SecureRandom.uuid : "#{Time.now.to_i}-#{rand(999999)}"
+end
+
+def set_attrs(entity, data)
+data.each { |k, v| entity.set_attribute(DICT, k, v) }
+end
+
+def get_attr(entity, key)
+entity.get_attribute(DICT, key)
+end
+
+def selected_face
+Sketchup.active_model.selection.grep(Sketchup::Face).first
+end
+
+def pt_to_s(p)
+[p.x.to_f, p.y.to_f, p.z.to_f].join('|')
+end
+
+def signed_area_xy(pts)
+area = 0.0
+pts.each_with_index do |p, i|
+q = pts[(i + 1) % pts.length]
+area += (p.x * q.y) - (q.x * p.y)
+end
+area / 2.0
+end
+
+def line_intersection_2d(p1, d1, p2, d2)
+Geom.intersect_line_line([p1, d1], [p2, d2])
+end
+
+def add_prism(ents, p1, p2, p3, p4, z_offset, height)
+return if height <= 0
+a = p1.offset(Z_AXIS, z_offset)
+b = p2.offset(Z_AXIS, z_offset)
+c = p3.offset(Z_AXIS, z_offset)
+d = p4.offset(Z_AXIS, z_offset)
+face = ents.add_face(a, b, c, d)
+return unless face
+face.reverse! if face.normal.z < 0
+face.pushpull(height)
+end
+
+def read_pref(key, default)
+Sketchup.read_default(PREF_KEY, key, default)
+end
+
+def write_pref(key, value)
+Sketchup.write_default(PREF_KEY, key, value)
+end
+
+def saved_values
+{
+'room_name' => read_pref('room_name', ts('المطبخ')).to_s,
+'wall_h'    => read_pref('wall_h', 280).to_f,
+'wall_t'    => read_pref('wall_t', 12).to_f,
+'floor_t'   => read_pref('floor_t', 10).to_f,
+'ceil_t'    => read_pref('ceil_t', 10).to_f,
+'create_floor' => read_pref('create_floor', 'نعم').to_s,
+'create_ceiling' => read_pref('create_ceiling', 'نعم').to_s,
+'ceiling_pattern' => read_pref('ceiling_pattern', 'flat').to_s,
+'perimeter_width' => read_pref('perimeter_width', 45).to_f,
+'perimeter_drop' => read_pref('perimeter_drop', 18).to_f,
+'center_inset' => read_pref('center_inset', 45).to_f,
+'center_drop' => read_pref('center_drop', 18).to_f,
+'center_led_inset' => read_pref('center_led_inset', 45).to_f,
+'center_led_drop' => read_pref('center_led_drop', 18).to_f,
+'center_led_thickness' => read_pref('center_led_thickness', 3).to_f,
+'combo_cove_width' => read_pref('combo_cove_width', 35).to_f,
+'combo_cove_drop' => read_pref('combo_cove_drop', 18).to_f,
+'combo_cove_lip_width' => read_pref('combo_cove_lip_width', 6).to_f,
+'combo_cove_lip_height' => read_pref('combo_cove_lip_height', 2).to_f,
+'combo_center_inset' => read_pref('combo_center_inset', 75).to_f,
+'combo_center_drop' => read_pref('combo_center_drop', 18).to_f,
+'combo_center_thickness' => read_pref('combo_center_thickness', 3).to_f,
+'strip_direction' => longitudinal_value?(read_pref('strip_direction', 'longitudinal')) ? 'longitudinal' : 'transverse',
+'strip_count' => read_pref('strip_count', 2).to_i,
+'strip_width' => read_pref('strip_width', 35).to_f,
+'strip_gap' => read_pref('strip_gap', 50).to_f,
+'strip_drop' => read_pref('strip_drop', 15).to_f,
+'cove_inset' => read_pref('cove_inset', 35).to_f,
+'cove_drop' => read_pref('cove_drop', 18).to_f,
+'cove_lip_width' => read_pref('cove_lip_width', 6).to_f,
+'cove_lip_height' => read_pref('cove_hand_thickness', 2).to_f,
+'drop_reference' => read_pref('drop_reference', 'below_wall').to_s,
+'light_enabled' => read_pref('light_enabled', 'لا').to_s,
+'light_mode' => read_pref('light_mode', 'both').to_s,
+'light_inset' => read_pref('light_inset', 8).to_f,
+'light_width' => read_pref('light_width', 2).to_f,
+'light_depth' => read_pref('light_depth', 0.5).to_f,
+'light_margin' => read_pref('light_margin', 0).to_f,
+'light_color' => read_pref('light_color', '#ffd27a').to_s,
+'glow_intensity' => read_pref('glow_intensity', 70).to_f,
+'glow_size' => read_pref('glow_size', 15).to_f
+}
+end
+
+def offset_polygon(pts, distance)
+return nil if pts.nil? || pts.length < 3
+result = []
+count = pts.length
+count.times do |i|
+prev_pt = pts[(i - 1) % count]
+curr_pt = pts[i]
+next_pt = pts[(i + 1) % count]
+d1 = prev_pt.vector_to(curr_pt)
+d2 = curr_pt.vector_to(next_pt)
+return nil if d1.length < 0.1.mm || d2.length < 0.1.mm
+d1.normalize!
+d2.normalize!
+n1 = Z_AXIS.cross(d1)
+n2 = Z_AXIS.cross(d2)
+n1.normalize!
+n2.normalize!
+n1.length = distance
+n2.length = distance
+l1 = prev_pt.offset(n1)
+l2 = curr_pt.offset(n2)
+intersection = line_intersection_2d(l1, d1, l2, d2)
+intersection ||= curr_pt.offset(n2)
+result << intersection
+end
+result
+rescue
+nil
+end
+
+def polygon_usable?(pts)
+return false if pts.nil? || pts.length < 3
+signed_area_xy(pts).abs > 1.cm * 1.cm
+end
+
+def add_poly_component(model, parent_ents, name, layer_name, pts, z, height, attrs = {}, material = nil)
+return nil unless polygon_usable?(pts) && height > 0
+definition = model.definitions.add("#{name}_#{Time.now.to_i}_#{rand(99999)}")
+raised = pts.map { |p| Geom::Point3d.new(p.x, p.y, z) }
+face = definition.entities.add_face(raised)
+return nil unless face
+face.reverse! if face.normal.z < 0
+face.pushpull(height)
+definition.entities.grep(Sketchup::Face).each { |f| f.material = material if material }
+instance = parent_ents.add_instance(definition, Geom::Transformation.new)
+instance.name = name
+instance.layer = layer_name.to_s.empty? ? model.layers[0] : tag(model, layer_name)
+set_attrs(instance, attrs.merge('UUID' => uuid))
+instance
+end
+
+def add_ring_component(model, parent_ents, name, layer_name, outer_pts, inner_pts, z, height, attrs = {}, material = nil)
+return nil unless polygon_usable?(outer_pts) && polygon_usable?(inner_pts) && height > 0
+definition = model.definitions.add("#{name}_#{Time.now.to_i}_#{rand(99999)}")
+outer = outer_pts.map { |p| Geom::Point3d.new(p.x, p.y, z) }
+inner = inner_pts.map { |p| Geom::Point3d.new(p.x, p.y, z) }
+outer_face = definition.entities.add_face(outer)
+return nil unless outer_face
+outer_face.reverse! if outer_face.normal.z < 0
+inner_face = definition.entities.add_face(inner)
+inner_face.erase! if inner_face && inner_face.valid?
+ring_face = definition.entities.grep(Sketchup::Face).find { |f| f.valid? && f.normal.z.abs > 0.9 }
+return nil unless ring_face
+ring_face.reverse! if ring_face.normal.z < 0
+ring_face.pushpull(height)
+definition.entities.grep(Sketchup::Face).each { |f| f.material = material if material }
+instance = parent_ents.add_instance(definition, Geom::Transformation.new)
+instance.name = name
+instance.layer = layer_name.to_s.empty? ? model.layers[0] : tag(model, layer_name)
+set_attrs(instance, attrs.merge('UUID' => uuid))
+instance
+end
+
+def led_material(model, hex, dark = false)
+name = dark ? 'MHD LED Groove' : "MHD LED #{hex}"
+mat = model.materials[name] || model.materials.add(name)
+if dark
+mat.color = Sketchup::Color.new(25, 28, 30)
+else
+value = hex.to_s.delete('#')
+value = 'ffd27a' unless value.match?(/\A[0-9a-fA-F]{6}\z/)
+mat.color = Sketchup::Color.new(value[0,2].to_i(16), value[2,2].to_i(16), value[4,2].to_i(16))
+mat.alpha = 0.92
+end
+mat
+end
+
+def png_chunk(type, data)
+[data.bytesize].pack('N') + type + data + [Zlib.crc32(type + data)].pack('N')
+end
+
+def gradient_texture_path(hex, intensity)
+value = hex.to_s.delete('#')
+value = 'ffd27a' unless value.match?(/\A[0-9a-fA-F]{6}\z/)
+strength = [[intensity.to_f, 0.0].max, 100.0].min
+path = File.join(Dir.tmpdir, "mhd_ceiling_glow_v4_#{value}_#{strength.round}.png")
+return path if File.exist?(path)
+r = value[0,2].to_i(16)
+g = value[2,2].to_i(16)
+b = value[4,2].to_i(16)
+width = 4
+height = 256
+raw = ''.b
+height.times do |y|
+t = y.to_f / (height - 1)
+alpha = y < 6 ? 0 : (255.0 * strength / 100.0 * (t ** 2.25)).round
+raw << "\x00".b
+width.times { raw << [r, g, b, alpha].pack('C4') }
+end
+png = "\x89PNG\r\n\x1a\n".b
+png << png_chunk('IHDR', [width, height, 8, 6, 0, 0, 0].pack('NNCCCCC'))
+png << png_chunk('IDAT', Zlib::Deflate.deflate(raw, Zlib::BEST_COMPRESSION))
+png << png_chunk('IEND', ''.b)
+File.binwrite(path, png)
+path
+rescue
+nil
+end
+
+def gradient_material(model, hex, intensity)
+value = hex.to_s.delete('#')
+value = 'ffd27a' unless value.match?(/\A[0-9a-fA-F]{6}\z/)
+name = "MHD Smooth Glow V4 #{value} #{intensity.to_f.round}"
+mat = model.materials[name] || model.materials.add(name)
+path = gradient_texture_path(value, intensity)
+mat.texture = path if path && File.exist?(path)
+selected_color = Sketchup::Color.new(
+value[0,2].to_i(16), value[2,2].to_i(16), value[4,2].to_i(16)
+)
+mat.color = selected_color
+if defined?(Sketchup::Material::COLORIZE_TINT) && mat.respond_to?(:colorize_type=)
+mat.colorize_type = Sketchup::Material::COLORIZE_TINT
+end
+mat.alpha = 1.0
+mat
+end
+
+def add_vertical_gradient_glow(model, parent_ents, room_name, path_pts,
+source_z, glow_size, color, intensity, attrs,
+direction = :down)
+return nil unless polygon_usable?(path_pts) && glow_size > 0 && intensity > 0
+material = gradient_material(model, color, intensity)
+return nil unless material && material.texture
+definition = model.definitions.add("تأثير_إضاءة_ناعم_#{Time.now.to_i}_#{rand(99999)}")
+count = path_pts.length
+count.times do |i|
+a = path_pts[i]
+b = path_pts[(i + 1) % count]
+next if a.distance(b) < 1.mm
+start_z = direction == :up ? source_z + 0.3.mm : source_z - 0.3.mm
+finish_z = direction == :up ? source_z + glow_size : source_z - glow_size
+p1 = Geom::Point3d.new(a.x, a.y, start_z)
+p2 = Geom::Point3d.new(b.x, b.y, start_z)
+p3 = Geom::Point3d.new(b.x, b.y, finish_z)
+p4 = Geom::Point3d.new(a.x, a.y, finish_z)
+face = definition.entities.add_face(p1, p2, p3, p4)
+next unless face
+uv1 = Geom::Point3d.new(0, 0, 1)
+uv2 = Geom::Point3d.new(1, 0, 1)
+uv3 = Geom::Point3d.new(1, 0.996, 1)
+uv4 = Geom::Point3d.new(0, 0.996, 1)
+mapping = [p1, uv1, p2, uv2, p3, uv3, p4, uv4]
+begin
+face.position_material(material, mapping, true)
+face.position_material(material, mapping, false)
+rescue
+face.material = material
+face.back_material = material
+end
+face.edges.each do |edge|
+edge.hidden = true
+edge.soft = true
+edge.smooth = true
+end
+end
+definition.entities.grep(Sketchup::Edge).each do |edge|
+edge.hidden = true
+edge.soft = true
+edge.smooth = true
+end
+instance = parent_ents.add_instance(definition, Geom::Transformation.new)
+instance.name = ts('تأثير الإضاءة المتدرج')
+instance.layer = model.layers[0]
+set_attrs(instance, attrs.merge('UUID' => uuid, 'النوع' => 'تأثير إضاءة متدرج'))
+instance
+end
+
+def add_horizontal_gradient_glow(model, parent_ents, room_name, source_pts,
+z, glow_size, color, intensity, attrs,
+spread_direction = :inward)
+return nil unless polygon_usable?(source_pts) && glow_size > 0 && intensity > 0
+offset_distance = spread_direction == :outward ? -glow_size : glow_size
+fade_pts = offset_polygon(source_pts, offset_distance)
+return nil unless polygon_usable?(fade_pts) && fade_pts.length == source_pts.length
+material = gradient_material(model, color, intensity)
+return nil unless material && material.texture
+definition = model.definitions.add("تأثير_يد_مخفي_أفقي_#{Time.now.to_i}_#{rand(99999)}")
+count = source_pts.length
+count.times do |i|
+a = source_pts[i]
+b = source_pts[(i + 1) % count]
+c = fade_pts[(i + 1) % count]
+d = fade_pts[i]
+p1 = Geom::Point3d.new(a.x, a.y, z + 0.4.mm)
+p2 = Geom::Point3d.new(b.x, b.y, z + 0.4.mm)
+p3 = Geom::Point3d.new(c.x, c.y, z + 0.4.mm)
+p4 = Geom::Point3d.new(d.x, d.y, z + 0.4.mm)
+face = definition.entities.add_face(p1, p2, p3, p4)
+next unless face
+mapping = [
+p1, Geom::Point3d.new(0, 0, 1),
+p2, Geom::Point3d.new(1, 0, 1),
+p3, Geom::Point3d.new(1, 0.996, 1),
+p4, Geom::Point3d.new(0, 0.996, 1)
+]
+begin
+face.position_material(material, mapping, true)
+face.position_material(material, mapping, false)
+rescue
+face.material = material
+face.back_material = material
+end
+face.edges.each do |edge|
+edge.hidden = true
+edge.soft = true
+edge.smooth = true
+end
+end
+definition.entities.grep(Sketchup::Edge).each do |edge|
+edge.hidden = true
+edge.soft = true
+edge.smooth = true
+end
+instance = parent_ents.add_instance(definition, Geom::Transformation.new)
+instance.name = ts('تأثير إضاءة اليد الأفقي')
+instance.layer = model.layers[0]
+set_attrs(instance, attrs.merge('UUID' => uuid, 'النوع' => 'إضاءة يد مخفية أفقية'))
+instance
+end
+
+def rect_points(min_x, min_y, max_x, max_y, z = 0)
+[Geom::Point3d.new(min_x,min_y,z), Geom::Point3d.new(max_x,min_y,z),
+Geom::Point3d.new(max_x,max_y,z), Geom::Point3d.new(min_x,max_y,z)]
+end
+
+def save_values(data)
+%w[room_name wall_h wall_t floor_t ceil_t create_floor create_ceiling ceiling_pattern
+perimeter_width perimeter_drop center_inset center_drop
+center_led_inset center_led_drop center_led_thickness strip_direction strip_count
+combo_cove_width combo_cove_drop combo_cove_lip_width combo_cove_lip_height
+combo_center_inset combo_center_drop combo_center_thickness
+strip_width strip_gap strip_drop cove_inset cove_drop cove_lip_width cove_lip_height
+drop_reference light_enabled light_mode light_inset light_width
+light_depth light_margin light_color glow_intensity glow_size].each do |k|
+write_pref(k, data[k]) if data.key?(k)
+end
+write_pref('cove_hand_thickness', data['cove_lip_height']) if data.key?('cove_lip_height')
+end
+
+# =========================================================
+# SMART ROOM EDIT ENGINE V5
+# =========================================================
+def save_room_pts(room_group, pts)
+data = pts.map { |p| [p.x.to_f, p.y.to_f, p.z.to_f] }
+room_group.set_attribute(DICT, 'room_pts_json', data.to_json)
+end
+
+def room_pts_from_group(room_group)
+json = room_group.get_attribute(DICT, 'room_pts_json').to_s
+return nil if json.empty?
+data = JSON.parse(json) rescue nil
+return nil unless data.is_a?(Array) && data.length >= 3
+data.map { |a| Geom::Point3d.new(a[0].to_f, a[1].to_f, a[2].to_f) }
+rescue
+nil
+end
+
+def save_build_data(room_group, data)
+save_beams(room_group, [])
+room_group.set_attribute(DICT, 'build_data_json', data.to_json)
+end
+
+def build_data_from_group(room_group)
+json = room_group.get_attribute(DICT, 'build_data_json').to_s
+return nil if json.empty?
+d = JSON.parse(json) rescue nil
+d.is_a?(Hash) ? d : nil
+rescue
+nil
+end
+
+def compute_outward_pts(pts, wall_t)
+count = pts.length
+outward = []
+count.times do |i|
+p_prev = pts[(i - 1) % count]
+p_curr = pts[i]
+p_next = pts[(i + 1) % count]
+d_prev = p_prev.vector_to(p_curr)
+d_curr = p_curr.vector_to(p_next)
+d_prev.normalize!
+d_curr.normalize!
+out_prev = d_prev.cross(Z_AXIS)
+out_curr = d_curr.cross(Z_AXIS)
+out_prev.normalize!
+out_curr.normalize!
+out_prev.length = wall_t
+out_curr.length = wall_t
+a1 = p_prev.offset(out_prev)
+b1 = p_curr.offset(out_curr)
+inter = line_intersection_2d(a1, d_prev, b1, d_curr)
+inter ||= p_curr.offset(out_curr)
+outward << inter
+end
+outward
+end
+
+def delete_room_parts(room_group, type)
+room_group.entities.to_a.each do |e|
+next unless e.valid?
+next unless e.is_a?(Sketchup::ComponentInstance) || e.is_a?(Sketchup::Group)
+next unless e.get_attribute(DICT, 'النوع').to_s == type.to_s
+e.erase!
+end
+end
+
+def ceiling_settings_differ?(old_d, new_d)
+keys = %w[
+ceiling_pattern drop_reference
+perimeter_width perimeter_drop
+center_inset center_drop
+center_led_inset center_led_drop center_led_thickness
+combo_cove_width combo_cove_drop combo_cove_lip_width combo_cove_lip_height
+combo_center_inset combo_center_drop combo_center_thickness
+strip_direction strip_count strip_width strip_gap strip_drop
+cove_inset cove_drop cove_lip_width cove_lip_height
+]
+keys.any? { |k| old_d[k].to_s != new_d[k].to_s }
+end
+
+def light_settings_differ?(old_d, new_d)
+keys = %w[
+light_enabled light_mode light_inset light_width light_depth
+light_margin light_color glow_intensity glow_size
+]
+keys.any? { |k| old_d[k].to_s != new_d[k].to_s }
+end
+
+def resize_existing_walls(room_group, delta, new_wall_h_cm)
+room_group.entities.to_a.each do |inst|
+next unless inst.valid?
+next unless inst.is_a?(Sketchup::ComponentInstance)
+next unless inst.get_attribute(DICT, 'النوع').to_s == 'حائط'
+definition = inst.definition
+if definition.instances.length > 1
+inst.make_unique
+definition = inst.definition
+end
+top_face = definition.entities.grep(Sketchup::Face).find do |f|
+f.valid? && f.normal.z > 0.9
+end
+next unless top_face
+begin
+top_face.pushpull(delta, false)
+rescue
+next
+end
+inst.set_attribute(DICT, 'الارتفاع سم', new_wall_h_cm)
+end
+end
+
+def move_ceiling_by_delta(room_group, delta)
+tr = Geom::Transformation.translation(Geom::Vector3d.new(0, 0, delta))
+room_group.entities.to_a.each do |inst|
+next unless inst.valid?
+next unless inst.is_a?(Sketchup::ComponentInstance)
+next unless inst.get_attribute(DICT, 'النوع').to_s == 'سقف'
+inst.transform!(tr)
+end
+end
+
+def rebuild_room_walls(room_group, pts, outward_pts, wall_h, wall_t,
+wall_h_cm, wall_t_cm, room_name, room_uuid)
+model = Sketchup.active_model
+count = pts.length
+stamp = Time.now.to_i
+delete_room_parts(room_group, 'حائط')
+count.times do |i|
+j = (i + 1) % count
+wall_number = format('%02d', i + 1)
+wall_name = "#{ts('حائط')} #{wall_number}"
+wall_def = model.definitions.add("#{room_name}_#{wall_name}_#{stamp}_#{rand(9999)}")
+add_prism(wall_def.entities, pts[i], pts[j], outward_pts[j], outward_pts[i], 0, wall_h)
+wall_inst = room_group.entities.add_instance(wall_def, Geom::Transformation.new)
+wall_inst.name = wall_name
+wall_inst.layer = tag(model, "#{room_name} | #{wall_name}")
+set_attrs(wall_inst, {
+'UUID' => uuid,
+'Room_UUID' => room_uuid,
+'النوع' => 'حائط',
+'اسم الغرفة' => room_name,
+'رقم الحائط' => i + 1,
+'الاسم' => wall_name,
+'الارتفاع سم' => wall_h_cm,
+'السمك سم' => wall_t_cm,
+'طول الحائط سم' => pts[i].distance(pts[j]).to_cm.round(2),
+'P1' => pt_to_s(pts[i]),
+'P2' => pt_to_s(pts[j]),
+'P3' => pt_to_s(outward_pts[j]),
+'P4' => pt_to_s(outward_pts[i])
+})
+end
+end
+
+def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, room_uuid)
+model = Sketchup.active_model
+delete_room_parts(room_group, 'أرضية')
+return if floor_t <= 0
+stamp = Time.now.to_i
+floor_def = model.definitions.add("#{room_name}_أرضية_#{stamp}_#{rand(9999)}")
+floor_face = floor_def.entities.add_face(outward_pts)
+return unless floor_face
+floor_face.reverse! if floor_face.normal.z < 0
+floor_face.pushpull(-floor_t)
+floor_inst = room_group.entities.add_instance(floor_def, Geom::Transformation.new)
+floor_inst.name = ts('الأرضية')
+floor_inst.layer = tag(model, "#{room_name} | #{ts('الأرضية')}")
+set_attrs(floor_inst, {
+'UUID' => uuid,
+'Room_UUID' => room_uuid,
+'النوع' => 'أرضية',
+'اسم الغرفة' => room_name,
+'السمك سم' => floor_t_cm
+})
+end
+
+def apply_smart_room_update(room_group, new_data)
+old_data = build_data_from_group(room_group) || {}
+pts = room_pts_from_group(room_group)
+if old_data.empty? || !pts || pts.length < 3
+return rebuild_entire_room(room_group, new_data)
+end
+model = Sketchup.active_model
+model.start_operation('MHD Smart Room Update', true)
+begin
+room_uuid = room_group.get_attribute(DICT, 'UUID').to_s
+room_uuid = uuid if room_uuid.empty?
+name_old = old_data['room_name'].to_s
+name_new = new_data['room_name'].to_s
+name_new = ts('الغرفة') if name_new.strip.empty?
+wall_h_old = old_data['wall_h'].to_f
+wall_h_new = new_data['wall_h'].to_f
+wall_t_old = old_data['wall_t'].to_f
+wall_t_new = new_data['wall_t'].to_f
+floor_t_old = old_data['floor_t'].to_f
+floor_t_new = new_data['floor_t'].to_f
+ceil_t_old = old_data['ceil_t'].to_f
+ceil_t_new = new_data['ceil_t'].to_f
+floor_on_old   = enabled_value?(old_data['create_floor'])
+floor_on_new   = enabled_value?(new_data['create_floor'])
+ceiling_on_old = enabled_value?(old_data['create_ceiling'])
+ceiling_on_new = enabled_value?(new_data['create_ceiling'])
+name_changed     = name_old != name_new
+wall_h_changed   = (wall_h_old - wall_h_new).abs > 0.001
+wall_t_changed   = (wall_t_old - wall_t_new).abs > 0.001
+floor_t_changed  = (floor_t_old - floor_t_new).abs > 0.001
+floor_toggle     = floor_on_old != floor_on_new
+floor_changed    = floor_t_changed || floor_toggle
+ceiling_toggle   = ceiling_on_old != ceiling_on_new
+ceiling_t_changed = (ceil_t_old - ceil_t_new).abs > 0.001
+ceiling_visual   = ceiling_settings_differ?(old_data, new_data)
+light_changed    = light_settings_differ?(old_data, new_data)
+ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual || light_changed
+
+
+  if name_changed
+    begin
+      room_group.name = name_new
+      room_group.layer = tag(model, name_new)
+    rescue
     end
-    result
-  rescue
-    text.to_s
-  end
-
-  def ui_direction
-    if defined?(MHDESIGN::Language) && MHDESIGN::Language.respond_to?(:direction)
-      MHDESIGN::Language.direction
-    else
-      'rtl'
+    old_prefix = "#{name_old} | "
+    room_group.entities.to_a.each do |e|
+      next unless e.valid? && e.respond_to?(:layer)
+      current_name = e.layer.name.to_s rescue ''
+      if current_name.start_with?(old_prefix)
+        suffix = current_name[old_prefix.length..-1]
+        begin
+          e.layer = tag(model, "#{name_new} | #{suffix}")
+        rescue
+        end
+      end
     end
-  rescue
-    'rtl'
   end
 
-  def ui_locale
-    if defined?(MHDESIGN::Language) && MHDESIGN::Language.respond_to?(:current)
-      MHDESIGN::Language.current
-    else
-      'ar_EG'
+  if wall_t_changed
+    new_outward = compute_outward_pts(pts, wall_t_new.cm)
+    rebuild_room_walls(room_group, pts, new_outward,
+                       wall_h_new.cm, wall_t_new.cm,
+                       wall_h_new, wall_t_new, name_new, room_uuid)
+    delete_room_parts(room_group, 'أرضية')
+    rebuild_room_floor(room_group, new_outward, floor_t_new.cm,
+                       floor_t_new, name_new, room_uuid) if floor_on_new && floor_t_new > 0
+    delete_room_parts(room_group, 'سقف')
+    if ceiling_on_new && ceil_t_new > 0
+      build_ceiling(model, room_group, name_new, room_uuid,
+                    new_outward, pts,
+                    wall_h_new.cm, ceil_t_new.cm, ceil_t_new, new_data)
     end
-  rescue
-    'ar_EG'
-  end
-
-  def enabled_value?(value)
-    %w[yes true on 1 نعم].include?(value.to_s.strip.downcase)
-  end
-
-  def longitudinal_value?(value)
-    %w[longitudinal طولي].include?(value.to_s.strip.downcase)
-  end
-
-  def tag(model, name)
-    model.layers[name] || model.layers.add(name)
-  end
-
-  def uuid
-    defined?(SecureRandom) ? SecureRandom.uuid : "#{Time.now.to_i}-#{rand(999999)}"
-  end
-
-  def set_attrs(entity, data)
-    data.each { |k, v| entity.set_attribute(DICT, k, v) }
-  end
-
-  def get_attr(entity, key)
-    entity.get_attribute(DICT, key)
-  end
-
-  def selected_face
-    Sketchup.active_model.selection.grep(Sketchup::Face).first
-  end
-
-  def pt_to_s(p)
-    [p.x.to_f, p.y.to_f, p.z.to_f].join('|')
-  end
-
-  def signed_area_xy(pts)
-    area = 0.0
-    pts.each_with_index do |p, i|
-      q = pts[(i + 1) % pts.length]
-      area += (p.x * q.y) - (q.x * p.y)
+  else
+    if wall_h_changed
+      delta_h = (wall_h_new - wall_h_old).cm
+      resize_existing_walls(room_group, delta_h, wall_h_new)
+      move_ceiling_by_delta(room_group, delta_h) unless ceiling_needs_rebuild
     end
-    area / 2.0
+    if floor_changed
+      current_outward = compute_outward_pts(pts, wall_t_old.cm)
+      if floor_on_new && floor_t_new > 0
+        rebuild_room_floor(room_group, current_outward, floor_t_new.cm,
+                           floor_t_new, name_new, room_uuid)
+      else
+        delete_room_parts(room_group, 'أرضية')
+      end
+    end
+    if ceiling_needs_rebuild
+      delete_room_parts(room_group, 'سقف')
+      if ceiling_on_new && ceil_t_new > 0
+        current_outward = compute_outward_pts(pts, wall_t_old.cm)
+        build_ceiling(model, room_group, name_new, room_uuid,
+                      current_outward, pts,
+                      wall_h_new.cm, ceil_t_new.cm, ceil_t_new, new_data)
+      end
+    end
   end
 
-  def line_intersection_2d(p1, d1, p2, d2)
-    Geom.intersect_line_line([p1, d1], [p2, d2])
+  rebuild_all_beams(room_group)
+  save_build_data(room_group, new_data)
+  room_group.set_attribute(DICT, 'اسم الغرفة', name_new)
+  room_group.set_attribute(DICT, 'ارتفاع الحائط سم', wall_h_new)
+  room_group.set_attribute(DICT, 'سمك الحائط سم', wall_t_new)
+  room_group.set_attribute(DICT, 'سمك الأرضية سم', floor_t_new)
+  room_group.set_attribute(DICT, 'سمك السقف سم', ceil_t_new)
+  room_group.set_attribute(DICT, 'إنشاء أرضية', floor_on_new ? 'نعم' : 'لا')
+  room_group.set_attribute(DICT, 'إنشاء سقف', ceiling_on_new ? 'نعم' : 'لا')
+  room_group.set_attribute(DICT, 'نمط السقف', new_data['ceiling_pattern'].to_s)
+  room_group.set_attribute(DICT, 'تاريخ آخر تعديل', Time.now.strftime('%Y-%m-%d %H:%M'))
+
+  model.commit_operation
+  model.active_view.invalidate
+  UI.messagebox("✅ #{ts('تم تعديل الغرفة بنجاح')}")
+  true
+rescue => e
+  model.abort_operation rescue nil
+  UI.messagebox("❌ #{ts('خطأ أثناء التعديل')}:\n#{e.message}")
+  false
+end
+
+
+end
+
+def rebuild_entire_room(room_group, new_data)
+pts = room_pts_from_group(room_group)
+unless pts
+UI.messagebox("❌ لا يمكن قراءة محيط الغرفة الأصلي.")
+return false
+end
+model = Sketchup.active_model
+model.start_operation('MHD Rebuild Room', true)
+begin
+room_uuid = room_group.get_attribute(DICT, 'UUID').to_s
+room_uuid = uuid if room_uuid.empty?
+name = new_data['room_name'].to_s.strip
+name = ts('الغرفة') if name.empty?
+wall_h_cm  = new_data['wall_h'].to_f
+wall_t_cm  = new_data['wall_t'].to_f
+floor_t_cm = new_data['floor_t'].to_f
+ceil_t_cm  = new_data['ceil_t'].to_f
+floor_on   = enabled_value?(new_data['create_floor'])
+ceiling_on = enabled_value?(new_data['create_ceiling'])
+room_group.entities.clear!
+outward = compute_outward_pts(pts, wall_t_cm.cm)
+rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid) if floor_on && floor_t_cm > 0
+if ceiling_on && ceil_t_cm > 0
+build_ceiling(model, room_group, name, room_uuid,
+outward, pts,
+wall_h_cm.cm, ceil_t_cm.cm, ceil_t_cm, new_data)
+end
+rebuild_room_walls(room_group, pts, outward,
+wall_h_cm.cm, wall_t_cm.cm,
+wall_h_cm, wall_t_cm, name, room_uuid)
+room_group.name = name
+room_group.layer = tag(model, name)
+save_build_data(room_group, new_data)
+room_group.set_attribute(DICT, 'اسم الغرفة', name)
+room_group.set_attribute(DICT, 'ارتفاع الحائط سم', wall_h_cm)
+room_group.set_attribute(DICT, 'سمك الحائط سم', wall_t_cm)
+room_group.set_attribute(DICT, 'سمك الأرضية سم', floor_t_cm)
+room_group.set_attribute(DICT, 'سمك السقف سم', ceil_t_cm)
+model.commit_operation
+model.active_view.invalidate
+UI.messagebox("✅ #{ts('تم إعادة بناء الغرفة بنجاح')}")
+true
+rescue => e
+model.abort_operation rescue nil
+UI.messagebox("❌ #{e.message}")
+false
+end
+end
+
+def open_edit_room_dialog(room_group)
+return unless room_group && room_group.valid?
+saved = build_data_from_group(room_group)
+unless saved && !saved.empty?
+UI.messagebox("⚠️ لا توجد بيانات محفوظة لهذه الغرفة.")
+return
+end
+merged = saved_values.merge(saved)
+dlg = UI::HtmlDialog.new(
+dialog_title: "#{ts('تعديل الغرفة')} - MRDESIGN",
+preferences_key: PREF_KEY,
+scrollable: false,
+resizable: true,
+width: 330,
+height: 720,
+style: UI::HtmlDialog::STYLE_DIALOG
+)
+html = html_dialog_content(merged)
+html = html.gsub('>إنشاء<', ">#{ts('حفظ التعديلات')}<")
+html = html.gsub('>إلغاء<', ">#{ts('إغلاق')}<")
+dlg.set_html(html)
+dlg.add_action_callback('cancel') { dlg.close }
+dlg.add_action_callback('submit') do |_, json|
+begin
+data = JSON.parse(json)
+save_values(data)
+dlg.close
+apply_smart_room_update(room_group, data)
+rescue => e
+UI.messagebox("Error:\n#{e.message}")
+end
+end
+dlg.show
+end
+
+class RoomEditPickTool
+def activate
+Sketchup.status_text = ts('انقر على أي جزء من الغرفة لتعديل خصائصها')
+end
+def onLButtonDown(_flags, x, y, view)
+ph = view.pick_helper
+ph.do_pick(x, y)
+ent = ph.best_picked
+if ent
+room = MHD_RoomBuilder_Context.find_room_group(ent)
+if room
+MHD_RoomBuilder_Context.open_edit_room_dialog(room)
+else
+UI.messagebox(ts('هذا العنصر ليس جزءاً من غرفة MHD'))
+end
+else
+UI.messagebox(ts('لم يتم تحديد أي عنصر'))
+end
+end
+def onCancel(_reason, _view)
+Sketchup.active_model.select_tool(nil)
+end
+end
+
+def activate_room_edit_picker
+Sketchup.active_model.select_tool(RoomEditPickTool.new)
+end
+
+def find_room_group(entity)
+return nil unless entity && entity.respond_to?(:valid?) && entity.valid?
+if entity.is_a?(Sketchup::Group) &&
+entity.get_attribute(DICT, 'النوع') == 'غرفة'
+return entity
+end
+uuid_v = ''
+current = entity
+depth = 0
+while current && depth < 20
+begin
+u = current.get_attribute(DICT, 'Room_UUID').to_s
+uuid_v = u unless u.empty?
+if current.is_a?(Sketchup::Group) &&
+current.get_attribute(DICT, 'النوع') == 'غرفة'
+return current
+end
+parent_ents = current.parent rescue nil
+break unless parent_ents
+container = parent_ents.parent rescue nil
+break unless container
+break if container.is_a?(Sketchup::Model)
+current = container
+depth += 1
+rescue
+break
+end
+end
+return nil if uuid_v.empty?
+find_group_by_uuid(Sketchup.active_model.entities, uuid_v)
+rescue
+nil
+end
+
+def find_group_by_uuid(entities, uuid_v)
+entities.each do |e|
+next unless e.is_a?(Sketchup::Group) && e.respond_to?(:valid?) && e.valid?
+return e if e.get_attribute(DICT, 'UUID').to_s == uuid_v
+nested = find_group_by_uuid(e.entities, uuid_v) rescue nil
+return nested if nested
+end
+nil
+end
+
+# =========================================================
+# MHD BEAM ENGINE V1 - Dynamic wall beams
+# =========================================================
+def beams_from_room(room_group)
+  json = room_group.get_attribute(DICT, 'beams_json').to_s
+  return [] if json.empty?
+  data = JSON.parse(json) rescue []
+  data.is_a?(Array) ? data : []
+end
+
+def save_beams(room_group, beams)
+  room_group.set_attribute(DICT, 'beams_json', beams.to_json)
+end
+
+def wall_info(wall)
+  return nil unless wall && wall.valid?
+  p1s = wall.get_attribute(DICT, 'P1').to_s
+  p2s = wall.get_attribute(DICT, 'P2').to_s
+  a = p1s.split('|').map(&:to_f)
+  b = p2s.split('|').map(&:to_f)
+  return nil unless a.length >= 3 && b.length >= 3
+  p1 = Geom::Point3d.new(a[0], a[1], a[2])
+  p2 = Geom::Point3d.new(b[0], b[1], b[2])
+  {
+    'p1' => p1,
+    'p2' => p2,
+    'length_cm' => p1.distance(p2).to_cm,
+    'wall_h_cm' => wall.get_attribute(DICT, 'الارتفاع سم').to_f,
+    'wall_t_cm' => wall.get_attribute(DICT, 'السمك سم').to_f,
+    'number' => wall.get_attribute(DICT, 'رقم الحائط').to_i,
+    'name' => wall.name.to_s,
+    'room_name' => wall.get_attribute(DICT, 'اسم الغرفة').to_s,
+    'room_uuid' => wall.get_attribute(DICT, 'Room_UUID').to_s
+  }
+end
+
+def find_wall_in_room(room_group, wall_number)
+  room_group.entities.to_a.find do |e|
+    e.valid? &&
+      e.is_a?(Sketchup::ComponentInstance) &&
+      e.get_attribute(DICT, 'النوع').to_s == 'حائط' &&
+      e.get_attribute(DICT, 'رقم الحائط').to_i == wall_number.to_i
+  end
+end
+
+def beam_specs_for_wall(room_group, wall_number)
+  beams_from_room(room_group).select { |b| b['wall_number'].to_i == wall_number.to_i }
+end
+
+def next_beam_number(room_group, wall_number)
+  nums = beam_specs_for_wall(room_group, wall_number).map { |b| b['number'].to_i }
+  (nums.max || 0) + 1
+end
+
+def normalize_beam_spec(spec, wall, number = nil)
+  info = wall_info(wall)
+  return nil unless info
+  {
+    'uuid' => (spec['uuid'].to_s.empty? ? uuid : spec['uuid'].to_s),
+    'wall_number' => info['number'],
+    'wall_name' => info['name'],
+    'room_uuid' => info['room_uuid'],
+    'room_name' => info['room_name'],
+    'number' => (number || spec['number']).to_i,
+    'height_cm' => spec['height_cm'].to_f,
+    'depth_cm' => spec['depth_cm'].to_f,
+    'elevation_cm' => spec['elevation_cm'].to_f
+  }
+end
+
+def delete_room_beams(room_group)
+  room_group.entities.to_a.each do |e|
+    next unless e.valid?
+    next unless e.is_a?(Sketchup::ComponentInstance)
+    next unless e.get_attribute(DICT, 'النوع').to_s == 'كمر'
+    e.erase!
+  end
+end
+
+def build_single_beam(model, room_group, wall, spec)
+  info = wall_info(wall)
+  return nil unless info
+
+  height_cm = spec['height_cm'].to_f
+  depth_cm = spec['depth_cm'].to_f
+  elevation_cm = spec['elevation_cm'].to_f
+
+  raise 'ارتفاع الكمر لازم يكون أكبر من صفر' if height_cm <= 0
+  raise 'عمق الكمر لازم يكون أكبر من صفر' if depth_cm <= 0
+  raise 'ارتفاع الكمر من الأرض لا يمكن أن يكون سالباً' if elevation_cm < 0
+  if height_cm > info['wall_h_cm']
+    height_cm = info['wall_h_cm']
+    elevation_cm = 0.0
+    spec['height_cm'] = height_cm
+    spec['elevation_cm'] = elevation_cm
+  elsif elevation_cm + height_cm > info['wall_h_cm']
+    elevation_cm = [info['wall_h_cm'] - height_cm, 0.0].max
+    spec['elevation_cm'] = elevation_cm
   end
 
-  def add_prism(ents, p1, p2, p3, p4, z_offset, height)
-    return if height <= 0
-    a = p1.offset(Z_AXIS, z_offset)
-    b = p2.offset(Z_AXIS, z_offset)
-    c = p3.offset(Z_AXIS, z_offset)
-    d = p4.offset(Z_AXIS, z_offset)
-    face = ents.add_face(a, b, c, d)
-    return unless face
-    face.reverse! if face.normal.z < 0
-    face.pushpull(height)
+  p1 = info['p1']
+  p2 = info['p2']
+  d = p1.vector_to(p2)
+  length = d.length
+  raise 'طول الحائط غير صالح لإنشاء الكمر' if length <= 0.1.mm
+  d.normalize!
+  n = d.cross(Z_AXIS)
+  n.normalize!
+  half_depth = depth_cm.cm / 2.0
+
+  base_z = p1.z + elevation_cm.cm
+  a = p1.offset(n, half_depth)
+  b = p2.offset(n, half_depth)
+  c = p2.offset(n, -half_depth)
+  dpt = p1.offset(n, -half_depth)
+
+  a.z = base_z
+  b.z = base_z
+  c.z = base_z
+  dpt.z = base_z
+
+  definition = model.definitions.add(
+    "MHD_كمر_#{spec['number']}_حائط_#{info['number']}_#{Time.now.to_i}_#{rand(99999)}"
+  )
+  face = definition.entities.add_face(a, b, c, dpt)
+  raise 'تعذر إنشاء سطح الكمر' unless face
+  face.reverse! if face.normal.z < 0
+  face.pushpull(height_cm.cm)
+
+  beam_name = "كمر #{spec['number']} | #{info['name']}"
+  beam_inst = room_group.entities.add_instance(definition, Geom::Transformation.new)
+  beam_inst.name = beam_name
+  beam_inst.layer = tag(model, beam_name)
+
+  set_attrs(beam_inst, {
+    'UUID' => spec['uuid'],
+    'Room_UUID' => info['room_uuid'],
+    'النوع' => 'كمر',
+    'اسم الغرفة' => info['room_name'],
+    'رقم الحائط' => info['number'],
+    'الحائط' => info['name'],
+    'رقم الكمر' => spec['number'],
+    'الاسم' => beam_name,
+    'ارتفاع الكمر سم' => height_cm,
+    'عمق الكمر سم' => depth_cm,
+    'ارتفاع من الأرض سم' => elevation_cm,
+    'طول الكمر سم' => info['length_cm'].round(2),
+    'Wall_P1' => pt_to_s(p1),
+    'Wall_P2' => pt_to_s(p2)
+  })
+  beam_inst
+end
+
+def rebuild_all_beams(room_group)
+  beams = beams_from_room(room_group)
+  delete_room_beams(room_group)
+  return true if beams.empty?
+
+  model = Sketchup.active_model
+  room_group.set_attribute(DICT, 'beams_json', beams.to_json)
+
+  beams.group_by { |b| b['wall_number'].to_i }.each do |wall_number, wall_beams|
+    wall = find_wall_in_room(room_group, wall_number)
+    next unless wall && wall.valid?
+    wall_beams.each do |spec|
+      begin
+        build_single_beam(model, room_group, wall, spec)
+      rescue => e
+        UI.messagebox("⚠️ لم يتم إنشاء #{spec['number']} للحائط #{wall_number}:\n#{e.message}")
+      end
+    end
+  end
+  true
+end
+
+def rename_beam_tags_for_room(room_group)
+  beams = beams_from_room(room_group)
+  return if beams.empty?
+  beams.each do |spec|
+    wall = find_wall_in_room(room_group, spec['wall_number'])
+    next unless wall
+    spec['wall_name'] = wall.name.to_s
+    spec['room_name'] = wall.get_attribute(DICT, 'اسم الغرفة').to_s
+  end
+  save_beams(room_group, beams)
+  rebuild_all_beams(room_group)
+end
+
+def beam_room_from_entity(entity)
+  find_room_group(entity)
+end
+
+def open_beam_dialog(target, edit_uuid = nil)
+  room_group = beam_room_from_entity(target)
+  unless room_group
+    UI.messagebox(ts('لم يتم العثور على غرفة MHD مرتبطة بهذا العنصر.'))
+    return
   end
 
-  def read_pref(key, default)
-    Sketchup.read_default(PREF_KEY, key, default)
+  is_beam = target.is_a?(Sketchup::ComponentInstance) &&
+            target.get_attribute(DICT, 'النوع').to_s == 'كمر'
+
+  wall = if is_beam
+    find_wall_in_room(room_group, target.get_attribute(DICT, 'رقم الحائط').to_i)
+  else
+    target
   end
 
-  def write_pref(key, value)
-    Sketchup.write_default(PREF_KEY, key, value)
+  unless wall && wall.valid? && wall.get_attribute(DICT, 'النوع').to_s == 'حائط'
+    UI.messagebox(ts('حدد حائطاً صحيحاً لإضافة الكمر.'))
+    return
   end
 
-  def saved_values
-    {
-      'room_name' => read_pref('room_name', ts('المطبخ')).to_s,
-      'wall_h'    => read_pref('wall_h', 280).to_f,
-      'wall_t'    => read_pref('wall_t', 12).to_f,
-      'floor_t'   => read_pref('floor_t', 10).to_f,
-      'ceil_t'    => read_pref('ceil_t', 10).to_f,
-      'create_floor' => read_pref('create_floor', 'نعم').to_s,
-      'create_ceiling' => read_pref('create_ceiling', 'نعم').to_s,
-      'ceiling_pattern' => read_pref('ceiling_pattern', 'flat').to_s,
-      'perimeter_width' => read_pref('perimeter_width', 45).to_f,
-      'perimeter_drop' => read_pref('perimeter_drop', 18).to_f,
-      'center_inset' => read_pref('center_inset', 45).to_f,
-      'center_drop' => read_pref('center_drop', 18).to_f,
-      'center_led_inset' => read_pref('center_led_inset', 45).to_f,
-      'center_led_drop' => read_pref('center_led_drop', 18).to_f,
-      'center_led_thickness' => read_pref('center_led_thickness', 3).to_f,
-      'combo_cove_width' => read_pref('combo_cove_width', 35).to_f,
-      'combo_cove_drop' => read_pref('combo_cove_drop', 18).to_f,
-      'combo_cove_lip_width' => read_pref('combo_cove_lip_width', 6).to_f,
-      'combo_cove_lip_height' => read_pref('combo_cove_lip_height', 2).to_f,
-      'combo_center_inset' => read_pref('combo_center_inset', 75).to_f,
-      'combo_center_drop' => read_pref('combo_center_drop', 18).to_f,
-      'combo_center_thickness' => read_pref('combo_center_thickness', 3).to_f,
-      'strip_direction' => longitudinal_value?(read_pref('strip_direction', 'longitudinal')) ? 'longitudinal' : 'transverse',
-      'strip_count' => read_pref('strip_count', 2).to_i,
-      'strip_width' => read_pref('strip_width', 35).to_f,
-      'strip_gap' => read_pref('strip_gap', 50).to_f,
-      'strip_drop' => read_pref('strip_drop', 15).to_f,
-      'cove_inset' => read_pref('cove_inset', 35).to_f,
-      'cove_drop' => read_pref('cove_drop', 18).to_f,
-      'cove_lip_width' => read_pref('cove_lip_width', 6).to_f,
-      'cove_lip_height' => read_pref('cove_hand_thickness', 2).to_f,
-      'drop_reference' => read_pref('drop_reference', 'below_wall').to_s,
-      'light_enabled' => read_pref('light_enabled', 'لا').to_s,
-      'light_mode' => read_pref('light_mode', 'both').to_s,
-      'light_inset' => read_pref('light_inset', 8).to_f,
-      'light_width' => read_pref('light_width', 2).to_f,
-      'light_depth' => read_pref('light_depth', 0.5).to_f,
-      'light_margin' => read_pref('light_margin', 0).to_f,
-      'light_color' => read_pref('light_color', '#ffd27a').to_s,
-      'glow_intensity' => read_pref('glow_intensity', 70).to_f,
-      'glow_size' => read_pref('glow_size', 15).to_f
+  info = wall_info(wall)
+  beams = beams_from_room(room_group)
+  current = nil
+
+  if is_beam
+    current = beams.find { |b| b['uuid'].to_s == target.get_attribute(DICT, 'UUID').to_s }
+    current ||= {
+      'uuid' => target.get_attribute(DICT, 'UUID').to_s,
+      'wall_number' => info['number'],
+      'number' => target.get_attribute(DICT, 'رقم الكمر').to_i,
+      'height_cm' => target.get_attribute(DICT, 'ارتفاع الكمر سم').to_f,
+      'depth_cm' => target.get_attribute(DICT, 'عمق الكمر سم').to_f,
+      'elevation_cm' => target.get_attribute(DICT, 'ارتفاع من الأرض سم').to_f
     }
   end
 
-  def offset_polygon(pts, distance)
-    return nil if pts.nil? || pts.length < 3
-    result = []
-    count = pts.length
-    count.times do |i|
-      prev_pt = pts[(i - 1) % count]
-      curr_pt = pts[i]
-      next_pt = pts[(i + 1) % count]
-      d1 = prev_pt.vector_to(curr_pt)
-      d2 = curr_pt.vector_to(next_pt)
-      return nil if d1.length < 0.1.mm || d2.length < 0.1.mm
-      d1.normalize!
-      d2.normalize!
-      n1 = Z_AXIS.cross(d1)
-      n2 = Z_AXIS.cross(d2)
-      n1.normalize!
-      n2.normalize!
-      n1.length = distance
-      n2.length = distance
-      l1 = prev_pt.offset(n1)
-      l2 = curr_pt.offset(n2)
-      intersection = line_intersection_2d(l1, d1, l2, d2)
-      intersection ||= curr_pt.offset(n2)
-      result << intersection
+  number = current ? current['number'].to_i : next_beam_number(room_group, info['number'])
+  defaults = {
+    'number' => number,
+    'height_cm' => current ? current['height_cm'].to_f : 20.0,
+    'depth_cm' => current ? current['depth_cm'].to_f : [info['wall_t_cm'], 20.0].max,
+    'elevation_cm' => current ? current['elevation_cm'].to_f : [info['wall_h_cm'] - 20.0, 0.0].max
+  }
+
+  dlg = UI::HtmlDialog.new(
+    dialog_title: is_beam ? "تعديل #{current ? "كمر #{number}" : 'الكمر'}" : "إضافة كمر | #{info['name']}",
+    preferences_key: "#{PREF_KEY}_BEAM",
+    scrollable: false,
+    resizable: false,
+    width: 380,
+    height: 440,
+    style: UI::HtmlDialog::STYLE_DIALOG
+  )
+
+  yes = JSON.generate(ts('نعم'))
+  html = <<-HTML
+<!DOCTYPE html>
+<html lang="#{ui_locale}" dir="#{ui_direction}">
+<head>
+<meta charset="UTF-8">
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#07131d;color:#eaf4f8;font-family:Arial,Tahoma,sans-serif;direction:#{ui_direction};overflow:hidden}
+.app{padding:14px}
+.head{background:#0c2230;border:1px solid #1c3342;border-radius:12px;padding:12px;margin-bottom:12px}
+.title{font-size:19px;font-weight:900;color:#fff}
+.info{font-size:12px;color:#9fb6c5;line-height:1.7;margin-top:5px}
+.group{background:#0b1b27;border:1px solid #1c3342;border-radius:10px;padding:10px}
+.row{display:grid;grid-template-columns:145px 1fr;gap:8px;align-items:center;margin-bottom:9px}
+label{font-size:13px;font-weight:900;color:#d8e8ef}
+input{width:100%;height:34px;border:0;border-radius:7px;background:#111f2a;color:#fff;outline:1px solid #243d4f;text-align:center;font-size:13px}
+input:focus{outline:2px solid #39a245}
+.hint{font-size:11px;color:#8eabbc;line-height:1.5;margin-top:4px}
+.footer{display:flex;gap:8px;margin-top:12px}
+button{height:42px;border:0;border-radius:9px;font-size:14px;font-weight:900;cursor:pointer}
+.save{flex:2;background:#4de37a;color:#061923}
+.close{flex:1;background:#0b1b27;color:#fff;border:1px solid #243d4f}
+.delete{background:#7d2631;color:#fff;padding:0 14px;display:#{is_beam ? 'block' : 'none'}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="head">
+    <div class="title">#{is_beam ? "⚙️ تعديل كمر #{number}" : '➕ إضافة كمر'}</div>
+    <div class="info">الحائط: #{info['name']}<br>طول الحائط: #{info['length_cm'].round(2)} سم<br>ارتفاع الحائط: #{info['wall_h_cm'].round(2)} سم</div>
+  </div>
+  <div class="group">
+    <div class="row"><label>ارتفاع الكمر سم</label><input id="height" type="number" min="0.1" step="0.1" value="#{defaults['height_cm']}"></div>
+    <div class="row"><label>عمق الكمر سم</label><input id="depth" type="number" min="0.1" step="0.1" value="#{defaults['depth_cm']}"></div>
+    <div class="row"><label>ارتفاع من الأرض سم</label><input id="elevation" type="number" min="0" step="0.1" value="#{defaults['elevation_cm']}"></div>
+    <div class="hint">الكمر يمتد تلقائياً بطول الحائط بالكامل، ويُعاد بناؤه تلقائياً عند تعديل ارتفاع أو سمك الحائط.</div>
+  </div>
+  <div class="footer">
+    <button class="save" onclick="submitData()">#{is_beam ? 'حفظ التعديل' : 'إضافة الكمر'}</button>
+    <button class="delete" onclick="removeBeam()">حذف</button>
+    <button class="close" onclick="sketchup.cancel()">إغلاق</button>
+  </div>
+</div>
+<script>
+function val(id){return document.getElementById(id).value}
+function submitData(){
+  const h=parseFloat(val('height')), d=parseFloat(val('depth')), z=parseFloat(val('elevation'));
+  if(!(h>0) || !(d>0) || !(z>=0)){alert('راجع المقاسات');return}
+  if(z+h>#{info['wall_h_cm'].to_f}+0.001){alert('ارتفاع الكمر + ارتفاعه من الأرض أكبر من ارتفاع الحائط');return}
+  sketchup.submit(JSON.stringify({height_cm:h,depth_cm:d,elevation_cm:z}));
+}
+function removeBeam(){sketchup.removeBeam()}
+</script>
+</body>
+</html>
+HTML
+
+  dlg.set_html(html)
+  dlg.add_action_callback('cancel') { dlg.close }
+
+  dlg.add_action_callback('submit') do |_, json|
+    begin
+      data = JSON.parse(json)
+      h = data['height_cm'].to_f
+      d = data['depth_cm'].to_f
+      z = data['elevation_cm'].to_f
+      if h <= 0 || d <= 0 || z < 0 || z + h > info['wall_h_cm'] + 0.001
+        raise 'قيم الكمر غير صالحة بالنسبة لارتفاع الحائط.'
+      end
+
+      model = Sketchup.active_model
+      model.start_operation(is_beam ? 'MHD Edit Beam' : 'MHD Add Beam', true)
+      begin
+        beams = beams_from_room(room_group)
+        if is_beam
+          idx = beams.index { |b| b['uuid'].to_s == target.get_attribute(DICT, 'UUID').to_s }
+          idx ||= beams.index { |b| b['uuid'].to_s == current['uuid'].to_s } if current
+          raise 'لم يتم العثور على بيانات الكمر.' unless idx
+          beams[idx]['height_cm'] = h
+          beams[idx]['depth_cm'] = d
+          beams[idx]['elevation_cm'] = z
+          beams[idx]['wall_number'] = info['number']
+          beams[idx]['wall_name'] = info['name']
+          beams[idx]['room_name'] = info['room_name']
+          beams[idx]['room_uuid'] = info['room_uuid']
+        else
+          beams << {
+            'uuid' => uuid,
+            'wall_number' => info['number'],
+            'wall_name' => info['name'],
+            'room_uuid' => info['room_uuid'],
+            'room_name' => info['room_name'],
+            'number' => number,
+            'height_cm' => h,
+            'depth_cm' => d,
+            'elevation_cm' => z
+          }
+        end
+        save_beams(room_group, beams)
+        rebuild_all_beams(room_group)
+        model.commit_operation
+        model.active_view.invalidate
+        dlg.close
+        UI.messagebox("✅ تم #{is_beam ? 'تعديل' : 'إضافة'} الكمر بنجاح")
+      rescue => e
+        model.abort_operation rescue nil
+        UI.messagebox("❌ #{e.message}")
+      end
+    rescue => e
+      UI.messagebox("❌ #{e.message}")
     end
-    result
-  rescue
-    nil
   end
 
-  def polygon_usable?(pts)
-    return false if pts.nil? || pts.length < 3
-    signed_area_xy(pts).abs > 1.cm * 1.cm
+  dlg.add_action_callback('removeBeam') do
+    begin
+      model = Sketchup.active_model
+      model.start_operation('MHD Delete Beam', true)
+      beams = beams_from_room(room_group)
+      uid = target.get_attribute(DICT, 'UUID').to_s
+      beams.reject! { |b| b['uuid'].to_s == uid }
+      beams_for_wall = beams.select { |b| b['wall_number'].to_i == info['number'] }
+      beams_for_wall.sort_by! { |b| b['number'].to_i }
+      beams_for_wall.each_with_index { |b, i| b['number'] = i + 1 }
+      save_beams(room_group, beams)
+      rebuild_all_beams(room_group)
+      model.commit_operation
+      model.active_view.invalidate
+      dlg.close
+      UI.messagebox('🗑️ تم حذف الكمر')
+    rescue => e
+      model.abort_operation rescue nil
+      UI.messagebox("❌ #{e.message}")
+    end
   end
 
-  def add_poly_component(model, parent_ents, name, layer_name, pts, z, height, attrs = {}, material = nil)
-    return nil unless polygon_usable?(pts) && height > 0
-    definition = model.definitions.add("#{name}_#{Time.now.to_i}_#{rand(99999)}")
-    raised = pts.map { |p| Geom::Point3d.new(p.x, p.y, z) }
-    face = definition.entities.add_face(raised)
-    return nil unless face
-    face.reverse! if face.normal.z < 0
-    face.pushpull(height)
-    definition.entities.grep(Sketchup::Face).each { |f| f.material = material if material }
-    instance = parent_ents.add_instance(definition, Geom::Transformation.new)
-    instance.name = name
-    instance.layer = layer_name.to_s.empty? ? model.layers[0] : tag(model, layer_name)
-    set_attrs(instance, attrs.merge('UUID' => uuid))
-    instance
+  dlg.show
+end
+
+class BeamPickTool
+  def activate
+    Sketchup.status_text = MHD_RoomBuilder_Context.ts('انقر على حائط لإضافة كمر أو على كمر لتعديله')
   end
 
-  def add_ring_component(model, parent_ents, name, layer_name, outer_pts, inner_pts, z, height, attrs = {}, material = nil)
-    return nil unless polygon_usable?(outer_pts) && polygon_usable?(inner_pts) && height > 0
-    definition = model.definitions.add("#{name}_#{Time.now.to_i}_#{rand(99999)}")
-    outer = outer_pts.map { |p| Geom::Point3d.new(p.x, p.y, z) }
-    inner = inner_pts.map { |p| Geom::Point3d.new(p.x, p.y, z) }
-    outer_face = definition.entities.add_face(outer)
-    return nil unless outer_face
-    outer_face.reverse! if outer_face.normal.z < 0
-    inner_face = definition.entities.add_face(inner)
-    inner_face.erase! if inner_face && inner_face.valid?
-    ring_face = definition.entities.grep(Sketchup::Face).find { |f| f.valid? && f.normal.z.abs > 0.9 }
-    return nil unless ring_face
-    ring_face.reverse! if ring_face.normal.z < 0
-    ring_face.pushpull(height)
-    definition.entities.grep(Sketchup::Face).each { |f| f.material = material if material }
-    instance = parent_ents.add_instance(definition, Geom::Transformation.new)
-    instance.name = name
-    instance.layer = layer_name.to_s.empty? ? model.layers[0] : tag(model, layer_name)
-    set_attrs(instance, attrs.merge('UUID' => uuid))
-    instance
-  end
+  def onLButtonDown(_flags, x, y, view)
+    ph = view.pick_helper
+    ph.do_pick(x, y)
+    ent = ph.best_picked
+    unless ent
+      UI.messagebox(MHD_RoomBuilder_Context.ts('لم يتم تحديد أي عنصر'))
+      return
+    end
 
-  def led_material(model, hex, dark = false)
-    name = dark ? 'MHD LED Groove' : "MHD LED #{hex}"
-    mat = model.materials[name] || model.materials.add(name)
-    if dark
-      mat.color = Sketchup::Color.new(25, 28, 30)
+    room = MHD_RoomBuilder_Context.find_room_group(ent)
+    unless room
+      UI.messagebox(MHD_RoomBuilder_Context.ts('هذا العنصر ليس جزءاً من غرفة MHD'))
+      return
+    end
+
+    type = ent.get_attribute(MHD_RoomBuilder_Context::DICT, 'النوع').to_s rescue ''
+    if type == 'كمر'
+      MHD_RoomBuilder_Context.open_beam_dialog(ent)
+    elsif type == 'حائط'
+      MHD_RoomBuilder_Context.open_beam_dialog(ent)
     else
-      value = hex.to_s.delete('#')
-      value = 'ffd27a' unless value.match?(/\A[0-9a-fA-F]{6}\z/)
-      mat.color = Sketchup::Color.new(value[0,2].to_i(16), value[2,2].to_i(16), value[4,2].to_i(16))
-      mat.alpha = 0.92
-    end
-    mat
-  end
-
-  def png_chunk(type, data)
-    [data.bytesize].pack('N') + type + data + [Zlib.crc32(type + data)].pack('N')
-  end
-
-  def gradient_texture_path(hex, intensity)
-    value = hex.to_s.delete('#')
-    value = 'ffd27a' unless value.match?(/\A[0-9a-fA-F]{6}\z/)
-    strength = [[intensity.to_f, 0.0].max, 100.0].min
-    path = File.join(Dir.tmpdir, "mhd_ceiling_glow_v4_#{value}_#{strength.round}.png")
-    return path if File.exist?(path)
-    r = value[0,2].to_i(16)
-    g = value[2,2].to_i(16)
-    b = value[4,2].to_i(16)
-    width = 4
-    height = 256
-    raw = ''.b
-    height.times do |y|
-      t = y.to_f / (height - 1)
-      alpha = y < 6 ? 0 : (255.0 * strength / 100.0 * (t ** 2.25)).round
-      raw << "\x00".b
-      width.times { raw << [r, g, b, alpha].pack('C4') }
-    end
-    png = "\x89PNG\r\n\x1a\n".b
-    png << png_chunk('IHDR', [width, height, 8, 6, 0, 0, 0].pack('NNCCCCC'))
-    png << png_chunk('IDAT', Zlib::Deflate.deflate(raw, Zlib::BEST_COMPRESSION))
-    png << png_chunk('IEND', ''.b)
-    File.binwrite(path, png)
-    path
-  rescue
-    nil
-  end
-
-  def gradient_material(model, hex, intensity)
-    value = hex.to_s.delete('#')
-    value = 'ffd27a' unless value.match?(/\A[0-9a-fA-F]{6}\z/)
-    name = "MHD Smooth Glow V4 #{value} #{intensity.to_f.round}"
-    mat = model.materials[name] || model.materials.add(name)
-    path = gradient_texture_path(value, intensity)
-    mat.texture = path if path && File.exist?(path)
-    selected_color = Sketchup::Color.new(
-      value[0,2].to_i(16), value[2,2].to_i(16), value[4,2].to_i(16)
-    )
-    mat.color = selected_color
-    if defined?(Sketchup::Material::COLORIZE_TINT) && mat.respond_to?(:colorize_type=)
-      mat.colorize_type = Sketchup::Material::COLORIZE_TINT
-    end
-    mat.alpha = 1.0
-    mat
-  end
-
-  def add_vertical_gradient_glow(model, parent_ents, room_name, path_pts,
-                                 source_z, glow_size, color, intensity, attrs,
-                                 direction = :down)
-    return nil unless polygon_usable?(path_pts) && glow_size > 0 && intensity > 0
-    material = gradient_material(model, color, intensity)
-    return nil unless material && material.texture
-    definition = model.definitions.add("تأثير_إضاءة_ناعم_#{Time.now.to_i}_#{rand(99999)}")
-    count = path_pts.length
-    count.times do |i|
-      a = path_pts[i]
-      b = path_pts[(i + 1) % count]
-      next if a.distance(b) < 1.mm
-      start_z = direction == :up ? source_z + 0.3.mm : source_z - 0.3.mm
-      finish_z = direction == :up ? source_z + glow_size : source_z - glow_size
-      p1 = Geom::Point3d.new(a.x, a.y, start_z)
-      p2 = Geom::Point3d.new(b.x, b.y, start_z)
-      p3 = Geom::Point3d.new(b.x, b.y, finish_z)
-      p4 = Geom::Point3d.new(a.x, a.y, finish_z)
-      face = definition.entities.add_face(p1, p2, p3, p4)
-      next unless face
-      uv1 = Geom::Point3d.new(0, 0, 1)
-      uv2 = Geom::Point3d.new(1, 0, 1)
-      uv3 = Geom::Point3d.new(1, 0.996, 1)
-      uv4 = Geom::Point3d.new(0, 0.996, 1)
-      mapping = [p1, uv1, p2, uv2, p3, uv3, p4, uv4]
-      begin
-        face.position_material(material, mapping, true)
-        face.position_material(material, mapping, false)
-      rescue
-        face.material = material
-        face.back_material = material
-      end
-      face.edges.each do |edge|
-        edge.hidden = true
-        edge.soft = true
-        edge.smooth = true
-      end
-    end
-    definition.entities.grep(Sketchup::Edge).each do |edge|
-      edge.hidden = true
-      edge.soft = true
-      edge.smooth = true
-    end
-    instance = parent_ents.add_instance(definition, Geom::Transformation.new)
-    instance.name = ts('تأثير الإضاءة المتدرج')
-    instance.layer = model.layers[0]
-    set_attrs(instance, attrs.merge('UUID' => uuid, 'النوع' => 'تأثير إضاءة متدرج'))
-    instance
-  end
-
-  def add_horizontal_gradient_glow(model, parent_ents, room_name, source_pts,
-                                   z, glow_size, color, intensity, attrs,
-                                   spread_direction = :inward)
-    return nil unless polygon_usable?(source_pts) && glow_size > 0 && intensity > 0
-    offset_distance = spread_direction == :outward ? -glow_size : glow_size
-    fade_pts = offset_polygon(source_pts, offset_distance)
-    return nil unless polygon_usable?(fade_pts) && fade_pts.length == source_pts.length
-    material = gradient_material(model, color, intensity)
-    return nil unless material && material.texture
-    definition = model.definitions.add("تأثير_يد_مخفي_أفقي_#{Time.now.to_i}_#{rand(99999)}")
-    count = source_pts.length
-    count.times do |i|
-      a = source_pts[i]
-      b = source_pts[(i + 1) % count]
-      c = fade_pts[(i + 1) % count]
-      d = fade_pts[i]
-      p1 = Geom::Point3d.new(a.x, a.y, z + 0.4.mm)
-      p2 = Geom::Point3d.new(b.x, b.y, z + 0.4.mm)
-      p3 = Geom::Point3d.new(c.x, c.y, z + 0.4.mm)
-      p4 = Geom::Point3d.new(d.x, d.y, z + 0.4.mm)
-      face = definition.entities.add_face(p1, p2, p3, p4)
-      next unless face
-      mapping = [
-        p1, Geom::Point3d.new(0, 0, 1),
-        p2, Geom::Point3d.new(1, 0, 1),
-        p3, Geom::Point3d.new(1, 0.996, 1),
-        p4, Geom::Point3d.new(0, 0.996, 1)
-      ]
-      begin
-        face.position_material(material, mapping, true)
-        face.position_material(material, mapping, false)
-      rescue
-        face.material = material
-        face.back_material = material
-      end
-      face.edges.each do |edge|
-        edge.hidden = true
-        edge.soft = true
-        edge.smooth = true
-      end
-    end
-    definition.entities.grep(Sketchup::Edge).each do |edge|
-      edge.hidden = true
-      edge.soft = true
-      edge.smooth = true
-    end
-    instance = parent_ents.add_instance(definition, Geom::Transformation.new)
-    instance.name = ts('تأثير إضاءة اليد الأفقي')
-    instance.layer = model.layers[0]
-    set_attrs(instance, attrs.merge('UUID' => uuid, 'النوع' => 'إضاءة يد مخفية أفقية'))
-    instance
-  end
-
-  def rect_points(min_x, min_y, max_x, max_y, z = 0)
-    [Geom::Point3d.new(min_x,min_y,z), Geom::Point3d.new(max_x,min_y,z),
-     Geom::Point3d.new(max_x,max_y,z), Geom::Point3d.new(min_x,max_y,z)]
-  end
-
-  def save_values(data)
-    %w[room_name wall_h wall_t floor_t ceil_t create_floor create_ceiling ceiling_pattern
-       perimeter_width perimeter_drop center_inset center_drop
-       center_led_inset center_led_drop center_led_thickness strip_direction strip_count
-       combo_cove_width combo_cove_drop combo_cove_lip_width combo_cove_lip_height
-       combo_center_inset combo_center_drop combo_center_thickness
-       strip_width strip_gap strip_drop cove_inset cove_drop cove_lip_width cove_lip_height
-       drop_reference light_enabled light_mode light_inset light_width
-       light_depth light_margin light_color glow_intensity glow_size].each do |k|
-      write_pref(k, data[k]) if data.key?(k)
-    end
-    write_pref('cove_hand_thickness', data['cove_lip_height']) if data.key?('cove_lip_height')
-  end
-
-  # =========================================================
-  # SMART ROOM EDIT ENGINE V5
-  # =========================================================
-  def save_room_pts(room_group, pts)
-    data = pts.map { |p| [p.x.to_f, p.y.to_f, p.z.to_f] }
-    room_group.set_attribute(DICT, 'room_pts_json', data.to_json)
-  end
-
-  def room_pts_from_group(room_group)
-    json = room_group.get_attribute(DICT, 'room_pts_json').to_s
-    return nil if json.empty?
-    data = JSON.parse(json) rescue nil
-    return nil unless data.is_a?(Array) && data.length >= 3
-    data.map { |a| Geom::Point3d.new(a[0].to_f, a[1].to_f, a[2].to_f) }
-  rescue
-    nil
-  end
-
-  def save_build_data(room_group, data)
-    room_group.set_attribute(DICT, 'build_data_json', data.to_json)
-  end
-
-  def build_data_from_group(room_group)
-    json = room_group.get_attribute(DICT, 'build_data_json').to_s
-    return nil if json.empty?
-    d = JSON.parse(json) rescue nil
-    d.is_a?(Hash) ? d : nil
-  rescue
-    nil
-  end
-
-  def compute_outward_pts(pts, wall_t)
-    count = pts.length
-    outward = []
-    count.times do |i|
-      p_prev = pts[(i - 1) % count]
-      p_curr = pts[i]
-      p_next = pts[(i + 1) % count]
-      d_prev = p_prev.vector_to(p_curr)
-      d_curr = p_curr.vector_to(p_next)
-      d_prev.normalize!
-      d_curr.normalize!
-      out_prev = d_prev.cross(Z_AXIS)
-      out_curr = d_curr.cross(Z_AXIS)
-      out_prev.normalize!
-      out_curr.normalize!
-      out_prev.length = wall_t
-      out_curr.length = wall_t
-      a1 = p_prev.offset(out_prev)
-      b1 = p_curr.offset(out_curr)
-      inter = line_intersection_2d(a1, d_prev, b1, d_curr)
-      inter ||= p_curr.offset(out_curr)
-      outward << inter
-    end
-    outward
-  end
-
-  def delete_room_parts(room_group, type)
-    room_group.entities.to_a.each do |e|
-      next unless e.valid?
-      next unless e.is_a?(Sketchup::ComponentInstance) || e.is_a?(Sketchup::Group)
-      next unless e.get_attribute(DICT, 'النوع').to_s == type.to_s
-      e.erase!
+      UI.messagebox(MHD_RoomBuilder_Context.ts('اضغط على حائط أو كمر داخل غرفة MHD'))
     end
   end
 
-  def ceiling_settings_differ?(old_d, new_d)
-    keys = %w[
-      ceiling_pattern drop_reference
-      perimeter_width perimeter_drop
-      center_inset center_drop
-      center_led_inset center_led_drop center_led_thickness
-      combo_cove_width combo_cove_drop combo_cove_lip_width combo_cove_lip_height
-      combo_center_inset combo_center_drop combo_center_thickness
-      strip_direction strip_count strip_width strip_gap strip_drop
-      cove_inset cove_drop cove_lip_width cove_lip_height
-    ]
-    keys.any? { |k| old_d[k].to_s != new_d[k].to_s }
+  def onCancel(_reason, _view)
+    Sketchup.active_model.select_tool(nil)
   end
+end
 
-  def light_settings_differ?(old_d, new_d)
-    keys = %w[
-      light_enabled light_mode light_inset light_width light_depth
-      light_margin light_color glow_intensity glow_size
-    ]
-    keys.any? { |k| old_d[k].to_s != new_d[k].to_s }
+def activate_beam_picker
+  Sketchup.active_model.select_tool(BeamPickTool.new)
+end
+
+
+# =========================================================
+# END SMART ROOM EDIT ENGINE V5
+# =========================================================
+
+# -------------------------
+# Modern HTML Dialog
+# -------------------------
+def html_dialog_content(values)
+v = values
+floor_on = enabled_value?(v['create_floor']) ? 'on' : ''
+ceil_on  = enabled_value?(v['create_ceiling']) ? 'on' : ''
+light_on = enabled_value?(v['light_enabled']) ? 'on' : ''
+floor_txt = enabled_value?(v['create_floor']) ? ts('نعم') : ts('لا')
+ceil_txt  = enabled_value?(v['create_ceiling']) ? ts('نعم') : ts('لا')
+light_txt = enabled_value?(v['light_enabled']) ? ts('نعم') : ts('لا')
+yes_label = JSON.generate(ts('نعم'))
+no_label = JSON.generate(ts('لا'))
+label_align = ui_direction == 'rtl' ? 'right' : 'left'
+
+
+html = <<-HTML
+
+
+<!DOCTYPE html>
+<html lang="#{ui_locale}" dir="#{ui_direction}">
+<head>
+<meta charset="UTF-8">
+<title>MHD Room Builder</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,Tahoma,sans-serif;background:#07131d;color:#eaf4f8;overflow:hidden;direction:#{ui_direction};}
+::-webkit-scrollbar{width:8px}
+::-webkit-scrollbar-track{background:#07131d}
+::-webkit-scrollbar-thumb{background:#1d3444;border-radius:20px;border:2px solid #07131d}
+.app{height:100vh;display:flex;flex-direction:column;background:#07131d}
+.hero{height:74px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:linear-gradient(135deg,#07131d,#0c2230);border-bottom:1px solid #1c3342;}
+.logo{width:58px;height:58px;object-fit:contain;background:#081722;border:1px solid #1c3342;border-radius:10px;padding:5px;flex:0 0 auto;}
+.head-text{flex:1;overflow:hidden;text-align:center}
+.title-main{font-size:20px;font-weight:900;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2}
+.subtitle{margin-top:6px;font-size:11px;line-height:1.5;color:#9fb6c5;height:32px;overflow:hidden}
+.wrap{height:calc(100vh - 74px - 58px);overflow:auto;padding:10px;background:#07131d}
+.group{background:#0b1b27;border:1px solid #1c3342;border-radius:10px;margin-bottom:10px;overflow:hidden}
+.group-title{padding:9px 10px;background:#0f2433;color:#39a245;font-size:16px;font-weight:900;border-bottom:1px solid #1c3342;user-select:none}
+.group-body{padding:8px 8px 10px}
+.field-row{display:grid;grid-template-columns:105px 1fr;gap:8px;align-items:center;margin-bottom:7px}
+.field-row:last-child{margin-bottom:0}
+label{font-size:13px;font-weight:900;color:#d8e8ef;text-align:#{label_align};line-height:1.3}
+input[type=text],input[type=number],select{width:100%;height:30px;padding:4px 8px;border:none;border-radius:6px;background:#111f2a;color:#fff;font-size:13px;outline:1px solid #243d4f;text-align:center;}
+input[type=text]:focus,input[type=number]:focus,select:focus{outline:2px solid #39a245;background:#0d1b25}
+select{cursor:pointer}
+input[type=color]{width:100%;height:30px;padding:2px;border:1px solid #243d4f;border-radius:6px;background:#111f2a}
+.switch-row{display:grid;grid-template-columns:105px 1fr;gap:8px;align-items:center;margin-bottom:7px}
+.toggle{height:30px;background:#111f2a;border-radius:6px;outline:1px solid #243d4f;display:flex;align-items:center;justify-content:space-between;padding:0 8px;cursor:pointer;user-select:none;color:#fff;font-size:12px;}
+.toggle .dot{width:16px;height:16px;border-radius:50%;background:#355467;border:1px solid #57798a}
+.toggle.on .dot{background:#39a245;border-color:#39a245}
+.collapsible{cursor:pointer;display:flex;align-items:center;justify-content:space-between}
+.collapsible .arrow{font-size:12px;transition:.2s}
+.group.closed .group-body{display:none}
+.group.closed .arrow{transform:rotate(90deg)}
+.conditional{display:none}
+.conditional.active{display:block}
+.patterns-scroll{display:flex;gap:8px;overflow-x:auto;overflow-y:hidden;padding:2px 2px 9px;scroll-behavior:smooth}
+.pattern-card{flex:0 0 112px;background:#0b1b27;border:1px solid #243d4f;border-radius:10px;padding:6px;cursor:pointer;text-align:center;transition:.15s;user-select:none}
+.pattern-card.active{border-color:#39a245;box-shadow:0 0 0 1px #39a24566;background:#0f2433}
+.pattern-img{height:68px;border-radius:7px;background-size:cover;background-position:center;background-repeat:no-repeat;background-color:#182836;border:1px solid #1c3342}
+.pattern-name{font-size:11px;font-weight:900;color:#d8e8ef;line-height:1.3;margin-top:6px;min-height:29px;display:flex;align-items:center;justify-content:center}
+.hint{font-size:11px;color:#8eabbc;line-height:1.55;padding:4px 2px 0}
+.footer{height:58px;padding:8px 10px;border-top:1px solid #1c3342;background:#07131d;display:flex;gap:8px}
+button{height:40px;border-radius:10px;font-size:14px;font-weight:900;cursor:pointer;border:none}
+.ok{flex:2;background:#4de37a;color:#061923}
+.cancel{flex:1;background:#0b1b27;color:#fff;border:1px solid #243d4f}
+</style>
+</head>
+<body>
+<div class="app">
+<div class="hero">
+<img class="logo" src="#{LOGO_URL}">
+<div class="head-text">
+<div class="title-main">بناء الحوائط</div>
+<div class="subtitle">تم تصميم هذه الأداة بواسطة MHDESIGN<br>Room Builder V4.0</div>
+</div>
+</div>
+<div class="wrap">
+<div class="group">
+<div class="group-title">▼ بيانات الغرفة</div>
+<div class="group-body">
+<div class="field-row"><label>اسم الغرفة</label><input id="room_name" type="text" value="#{v['room_name']}"></div>
+</div>
+</div>
+<div class="group">
+<div class="group-title">▼ المقاسات</div>
+<div class="group-body">
+<div class="field-row"><label>ارتفاع الحائط سم</label><input id="wall_h" type="number" step="0.1" value="#{v['wall_h']}"></div>
+<div class="field-row"><label>سمك الحائط سم</label><input id="wall_t" type="number" step="0.1" value="#{v['wall_t']}"></div>
+<div class="field-row"><label>سمك الأرضية سم</label><input id="floor_t" type="number" step="0.1" value="#{v['floor_t']}"></div>
+<div class="field-row"><label>سمك السقف سم</label><input id="ceil_t" type="number" step="0.1" value="#{v['ceil_t']}"></div>
+</div>
+</div>
+<div class="group">
+<div class="group-title">▼ عناصر إضافية</div>
+<div class="group-body">
+<div class="switch-row"><label>إنشاء أرضية</label><div id="create_floor" class="toggle #{floor_on}" onclick="toggle(this)"><span>#{floor_txt}</span><b class="dot"></b></div></div>
+<div class="switch-row"><label>إنشاء سقف</label><div id="create_ceiling" class="toggle #{ceil_on}" onclick="toggle(this)"><span>#{ceil_txt}</span><b class="dot"></b></div></div>
+</div>
+</div>
+<div id="ceiling_group" class="group">
+<div class="group-title collapsible" onclick="collapseGroup(this)"><span>خيارات السقف</span><span class="arrow">▼</span></div>
+<div class="group-body">
+<input id="ceiling_pattern" type="hidden" value="#{v['ceiling_pattern']}">
+<div class="patterns-scroll">
+<div class="pattern-card #{v['ceiling_pattern']=='flat' ? 'active' : ''}" data-pattern="flat" onclick="selectCeilingPattern(this)"><div class="pattern-img" style="background-image:url('https://mhdesign-eg.com/SKETCHUP022/wall/1.png')"></div><div class="pattern-name">سقف فلات</div></div>
+<div class="pattern-card #{v['ceiling_pattern']=='perimeter' ? 'active' : ''}" data-pattern="perimeter" onclick="selectCeilingPattern(this)"><div class="pattern-img" style="background-image:url('https://mhdesign-eg.com/SKETCHUP022/wall/2.png')"></div><div class="pattern-name">ساقط محيطي</div></div>
+<div class="pattern-card #{v['ceiling_pattern']=='center' ? 'active' : ''}" data-pattern="center" onclick="selectCeilingPattern(this)"><div class="pattern-img" style="background-image:url('https://mhdesign-eg.com/SKETCHUP022/wall/3.png')"></div><div class="pattern-name">ساقط من المنتصف</div></div>
+<div class="pattern-card #{v['ceiling_pattern']=='center_hidden_led' ? 'active' : ''}" data-pattern="center_hidden_led" onclick="selectCeilingPattern(this)"><div class="pattern-img" style="background-image:url('https://mhdesign-eg.com/SKETCHUP022/wall/4.png')"></div><div class="pattern-name">منتصف + ليد مخفي</div></div>
+<div class="pattern-card #{v['ceiling_pattern']=='double_hidden_led' ? 'active' : ''}" data-pattern="double_hidden_led" onclick="selectCeilingPattern(this)"><div class="pattern-img" style="background-image:url('https://mhdesign-eg.com/SKETCHUP022/wall/5.png')"></div><div class="pattern-name">بيت نور + منتصف مخفي</div></div>
+<div class="pattern-card #{v['ceiling_pattern']=='strips' ? 'active' : ''}" data-pattern="strips" onclick="selectCeilingPattern(this)"><div class="pattern-img" style="background-image:url('https://mhdesign-eg.com/SKETCHUP022/wall/7.png')"></div><div class="pattern-name">شرائط طولية / عرضية</div></div>
+<div class="pattern-card #{v['ceiling_pattern']=='hidden_cove' ? 'active' : ''}" data-pattern="hidden_cove" onclick="selectCeilingPattern(this)"><div class="pattern-img" style="background-image:url('https://mhdesign-eg.com/SKETCHUP022/wall/6.png')"></div><div class="pattern-name">بيت نور مخفي</div></div>
+</div>
+<div id="drop_reference_row" class="field-row"><label>حساب السقوط</label>
+<select id="drop_reference">
+<option value="below_wall" #{v['drop_reference']=='below_wall' ? 'selected' : ''}>أسفل ارتفاع الحائط</option>
+<option value="wall_is_finish" #{v['drop_reference']=='wall_is_finish' ? 'selected' : ''}>ارتفاع الحائط بعد السقوط</option>
+</select>
+</div>
+<div id="drop_reference_hint" class="hint">اختر هل قيمة ارتفاع الحائط تمثل السقف الأساسي أم الارتفاع الصافي أسفل الجزء الساقط.</div>
+
+
+    <div id="opts_flat" class="conditional"><div class="hint">سقف كامل بمستوى واحد حسب ارتفاع الحائط وسمك السقف.</div></div>
+    <div id="opts_perimeter" class="conditional">
+      <div class="field-row"><label>عرض الإطار سم</label><input id="perimeter_width" type="number" step="0.1" value="#{v['perimeter_width']}"></div>
+      <div class="field-row"><label>نزول الإطار سم</label><input id="perimeter_drop" type="number" step="0.1" value="#{v['perimeter_drop']}"></div>
+    </div>
+    <div id="opts_center" class="conditional">
+      <div class="field-row"><label>ارتداد المنتصف سم</label><input id="center_inset" type="number" step="0.1" value="#{v['center_inset']}"></div>
+      <div class="field-row"><label>نزول المنتصف سم</label><input id="center_drop" type="number" step="0.1" value="#{v['center_drop']}"></div>
+    </div>
+    <div id="opts_center_hidden_led" class="conditional">
+      <div class="field-row"><label>ارتداد الجزيرة سم</label><input id="center_led_inset" type="number" step="0.1" value="#{v['center_led_inset']}"></div>
+      <div class="field-row"><label>مقدار السقوط سم</label><input id="center_led_drop" type="number" step="0.1" value="#{v['center_led_drop']}"></div>
+      <div class="field-row"><label>سمك لوح الجزيرة سم</label><input id="center_led_thickness" type="number" step="0.1" value="#{v['center_led_thickness']}"></div>
+    </div>
+    <div id="opts_double_hidden_led" class="conditional">
+      <div class="field-row"><label>عرض بيت النور سم</label><input id="combo_cove_width" type="number" step="0.1" value="#{v['combo_cove_width']}"></div>
+      <div class="field-row"><label>نزول بيت النور سم</label><input id="combo_cove_drop" type="number" step="0.1" value="#{v['combo_cove_drop']}"></div>
+      <div class="field-row"><label>بروز اليد للداخل سم</label><input id="combo_cove_lip_width" type="number" step="0.1" value="#{v['combo_cove_lip_width']}"></div>
+      <div class="field-row"><label>سمك اليد سم</label><input id="combo_cove_lip_height" type="number" step="0.1" value="#{v['combo_cove_lip_height']}"></div>
+      <div class="field-row"><label>ارتداد الجزيرة سم</label><input id="combo_center_inset" type="number" step="0.1" value="#{v['combo_center_inset']}"></div>
+      <div class="field-row"><label>نزول الجزيرة سم</label><input id="combo_center_drop" type="number" step="0.1" value="#{v['combo_center_drop']}"></div>
+      <div class="field-row"><label>سمك لوح الجزيرة سم</label><input id="combo_center_thickness" type="number" step="0.1" value="#{v['combo_center_thickness']}"></div>
+    </div>
+    <div id="opts_strips" class="conditional">
+      <div class="field-row"><label>اتجاه الشرائط</label><select id="strip_direction"><option value="longitudinal" #{longitudinal_value?(v['strip_direction']) ? 'selected' : ''}>طولي</option><option value="transverse" #{longitudinal_value?(v['strip_direction']) ? '' : 'selected'}>عرضي</option></select></div>
+      <div class="field-row"><label>عدد الشرائط</label><input id="strip_count" type="number" min="1" max="20" step="1" value="#{v['strip_count']}"></div>
+      <div class="field-row"><label>عرض الشريط سم</label><input id="strip_width" type="number" step="0.1" value="#{v['strip_width']}"></div>
+      <div class="field-row"><label>المسافة بينهم سم</label><input id="strip_gap" type="number" step="0.1" value="#{v['strip_gap']}"></div>
+      <div class="field-row"><label>نزول الشرائط سم</label><input id="strip_drop" type="number" step="0.1" value="#{v['strip_drop']}"></div>
+    </div>
+    <div id="opts_hidden_cove" class="conditional">
+      <div class="field-row"><label>عرض بيت النور سم</label><input id="cove_inset" type="number" step="0.1" value="#{v['cove_inset']}"></div>
+      <div class="field-row"><label>مقدار النزول سم</label><input id="cove_drop" type="number" step="0.1" value="#{v['cove_drop']}"></div>
+      <div class="field-row"><label>بروز اليد للداخل سم</label><input id="cove_lip_width" type="number" step="0.1" value="#{v['cove_lip_width']}"></div>
+      <div class="field-row"><label>سمك اليد سم</label><input id="cove_lip_height" type="number" step="0.1" value="#{v['cove_lip_height']}"></div>
+    </div>
+  </div>
+</div>
+<div id="light_group" class="group">
+  <div class="group-title collapsible" onclick="collapseGroup(this)"><span>تأثير الإضاءة</span><span class="arrow">▼</span></div>
+  <div class="group-body">
+    <div class="switch-row"><label>تشغيل الإضاءة</label><div id="light_enabled" class="toggle #{light_on}" onclick="toggle(this);updateLight()"><span>#{light_txt}</span><b class="dot"></b></div></div>
+    <div id="light_options">
+      <div class="field-row"><label>طريقة التنفيذ</label><select id="light_mode"><option value="groove" #{v['light_mode']=='groove' ? 'selected' : ''}>مجرى فقط</option><option value="effect" #{v['light_mode']=='effect' ? 'selected' : ''}>تأثير فقط</option><option value="both" #{v['light_mode']=='both' ? 'selected' : ''}>مجرى + تأثير</option></select></div>
+      <div class="field-row"><label>ارتداد الإضاءة سم</label><input id="light_inset" type="number" step="0.1" value="#{v['light_inset']}"></div>
+      <div class="field-row"><label>عرض المجرى سم</label><input id="light_width" type="number" step="0.1" value="#{v['light_width']}"></div>
+      <div class="field-row"><label>عمق المجرى سم</label><input id="light_depth" type="number" step="0.1" value="#{v['light_depth']}"></div>
+      <div class="field-row"><label>هامش البداية سم</label><input id="light_margin" type="number" step="0.1" value="#{v['light_margin']}"></div>
+      <div class="field-row"><label>لون التأثير</label><input id="light_color" type="color" value="#{v['light_color']}"></div>
+      <div class="field-row"><label>شدة الإضاءة %</label><input id="glow_intensity" type="number" min="0" max="100" step="1" value="#{v['glow_intensity']}"></div>
+      <div class="field-row"><label>حجم الانتشار سم</label><input id="glow_size" type="number" min="0" step="0.5" value="#{v['glow_size']}"></div>
+    </div>
+  </div>
+</div>
+
+
+</div>
+<div class="footer">
+<button class="ok" onclick="submitData()">إنشاء</button>
+<button class="cancel" onclick="sketchup.cancel()">إلغاء</button>
+</div>
+</div>
+<script>
+document.addEventListener('contextmenu', function(e){e.preventDefault();});
+document.addEventListener('dragstart', function(e){e.preventDefault();});
+function toggle(el){
+el.classList.toggle('on');
+el.querySelector('span').textContent = el.classList.contains('on') ? #{yes_label} : #{no_label};
+}
+function collapseGroup(title){ title.parentElement.classList.toggle('closed'); }
+function selectCeilingPattern(el){
+document.querySelectorAll('.pattern-card').forEach(card => card.classList.remove('active'));
+el.classList.add('active');
+document.getElementById('ceiling_pattern').value = el.dataset.pattern;
+updatePattern();
+}
+function updatePattern(){
+const pattern = val('ceiling_pattern');
+document.querySelectorAll('.conditional').forEach(el => el.classList.remove('active'));
+const box = document.getElementById('opts_' + pattern);
+if(box) box.classList.add('active');
+const dropped = pattern !== 'flat';
+document.getElementById('drop_reference_row').style.display = dropped ? 'grid' : 'none';
+document.getElementById('drop_reference_hint').style.display = dropped ? 'block' : 'none';
+}
+function updateLight(){
+const on = document.getElementById('light_enabled').classList.contains('on');
+document.getElementById('light_options').style.display = on ? 'block' : 'none';
+}
+function setCeilingVisibility(){
+const on = document.getElementById('create_ceiling').classList.contains('on');
+document.getElementById('ceiling_group').style.display = on ? 'block' : 'none';
+document.getElementById('light_group').style.display = on ? 'block' : 'none';
+}
+function val(id){ return document.getElementById(id).value; }
+function yesNo(id){ return document.getElementById(id).classList.contains('on') ? 'yes' : 'no'; }
+function submitData(){
+const data = {
+room_name: val('room_name'),
+wall_h: val('wall_h'), wall_t: val('wall_t'),
+floor_t: val('floor_t'), ceil_t: val('ceil_t'),
+create_floor: yesNo('create_floor'), create_ceiling: yesNo('create_ceiling'),
+ceiling_pattern: val('ceiling_pattern'),
+perimeter_width: val('perimeter_width'), perimeter_drop: val('perimeter_drop'),
+center_inset: val('center_inset'), center_drop: val('center_drop'),
+center_led_inset: val('center_led_inset'), center_led_drop: val('center_led_drop'),
+center_led_thickness: val('center_led_thickness'),
+combo_cove_width: val('combo_cove_width'), combo_cove_drop: val('combo_cove_drop'),
+combo_cove_lip_width: val('combo_cove_lip_width'), combo_cove_lip_height: val('combo_cove_lip_height'),
+combo_center_inset: val('combo_center_inset'), combo_center_drop: val('combo_center_drop'),
+combo_center_thickness: val('combo_center_thickness'),
+strip_direction: val('strip_direction'), strip_count: val('strip_count'),
+strip_width: val('strip_width'), strip_gap: val('strip_gap'), strip_drop: val('strip_drop'),
+cove_inset: val('cove_inset'), cove_drop: val('cove_drop'),
+cove_lip_width: val('cove_lip_width'), cove_lip_height: val('cove_lip_height'),
+drop_reference: val('drop_reference'),
+light_enabled: yesNo('light_enabled'), light_mode: val('light_mode'),
+light_inset: val('light_inset'), light_width: val('light_width'),
+light_depth: val('light_depth'), light_margin: val('light_margin'),
+light_color: val('light_color'), glow_intensity: val('glow_intensity'),
+glow_size: val('glow_size')
+};
+sketchup.submit(JSON.stringify(data));
+}
+document.getElementById('create_ceiling').addEventListener('click', function(){setTimeout(setCeilingVisibility,0)});
+updatePattern(); updateLight(); setCeilingVisibility();
+</script>
+</body>
+</html>
+HTML
+ts(html)
+end
+
+def dialog_input
+unless selected_face
+UI.messagebox(ts('حدد Face الأرضية الأول'))
+return
+end
+dlg = UI::HtmlDialog.new(
+dialog_title: ts('بناء الحوائط'),
+preferences_key: PREF_KEY,
+scrollable: false,
+resizable: true,
+width: 330,
+height: 720,
+style: UI::HtmlDialog::STYLE_DIALOG
+)
+dlg.set_html(html_dialog_content(saved_values))
+dlg.add_action_callback('cancel') { dlg.close }
+dlg.add_action_callback('submit') do |_, json|
+data = JSON.parse(json)
+save_values(data)
+dlg.close
+build_from_data(data)
+rescue => e
+UI.messagebox("Error:\n#{e.message}")
+end
+dlg.show
+nil
+end
+
+# -------------------------
+# Build Ceiling (unchanged)
+# -------------------------
+def build_ceiling(model, room_ents, room_name, room_uuid, outer_pts, room_pts,
+wall_h, ceil_t, ceil_t_cm, data)
+# ... [الكود الأصلي كما هو] ...
+pattern = data['ceiling_pattern'].to_s
+pattern = 'flat' unless %w[flat perimeter center center_hidden_led double_hidden_led strips hidden_cove].include?(pattern)
+common = {
+'Room_UUID' => room_uuid, 'النوع' => 'سقف', 'اسم الغرفة' => room_name,
+'نمط السقف' => pattern, 'السمك سم' => ceil_t_cm
+}
+ceiling_def = model.definitions.add("#{room_name}_السقف_الكامل_#{Time.now.to_i}_#{rand(99999)}")
+ceiling_inst = room_ents.add_instance(ceiling_def, Geom::Transformation.new)
+ceiling_inst.name = ts('السقف')
+ceiling_inst.layer = tag(model, "#{room_name} | #{ts('السقف')}")
+set_attrs(ceiling_inst, common.merge('UUID' => uuid, 'الجزء' => 'السقف الكامل'))
+room_ents = ceiling_def.entities
+
+
+selected_drop = case pattern
+                when 'perimeter' then [data['perimeter_drop'].to_f.cm, 0.5.cm].max
+                when 'center' then [data['center_drop'].to_f.cm, 0.5.cm].max
+                when 'center_hidden_led' then [data['center_led_drop'].to_f.cm, 1.cm].max
+                when 'double_hidden_led'
+                  [[data['combo_cove_drop'].to_f.cm, 1.cm].max,
+                   [data['combo_center_drop'].to_f.cm, 1.cm].max].max
+                when 'strips' then [data['strip_drop'].to_f.cm, 0.5.cm].max
+                when 'hidden_cove' then [data['cove_drop'].to_f.cm, 0.5.cm].max
+                else 0.0
+                end
+drop_reference = data['drop_reference'].to_s
+drop_reference = 'below_wall' unless %w[below_wall wall_is_finish].include?(drop_reference)
+base_z = (pattern != 'flat' && drop_reference == 'wall_is_finish') ? wall_h + selected_drop : wall_h
+common['طريقة حساب السقوط'] = drop_reference
+
+add_poly_component(model, room_ents, ts('السقف الأساسي'), nil,
+                   outer_pts, base_z, ceil_t, common.merge('الجزء' => 'أساسي'))
+
+light_reference = { kind: :perimeter, source_pts: room_pts,
+                    distance: data['light_inset'].to_f.cm,
+                    underside_z: base_z, strips: [] }
+
+case pattern
+when 'perimeter'
+  width = [data['perimeter_width'].to_f.cm, 1.cm].max
+  drop = selected_drop
+  inner = offset_polygon(room_pts, width)
+  if polygon_usable?(inner)
+    add_ring_component(model, room_ents, ts('السقف الساقط المحيطي'),
+                       nil, outer_pts, inner,
+                       base_z - drop, drop, common.merge(
+                         'الجزء' => 'إطار محيطي', 'عرض الإطار سم' => data['perimeter_width'].to_f,
+                         'مقدار النزول سم' => data['perimeter_drop'].to_f))
+    light_reference = { kind: :perimeter, source_pts: room_pts,
+                        distance: [width - data['light_inset'].to_f.cm, 0.2.cm].max,
+                        underside_z: base_z - drop, strips: [] }
   end
-
-  def resize_existing_walls(room_group, delta, new_wall_h_cm)
-    room_group.entities.to_a.each do |inst|
-      next unless inst.valid?
-      next unless inst.is_a?(Sketchup::ComponentInstance)
-      next unless inst.get_attribute(DICT, 'النوع').to_s == 'حائط'
-      definition = inst.definition
-      if definition.instances.length > 1
-        inst.make_unique
-        definition = inst.definition
-      end
-      top_face = definition.entities.grep(Sketchup::Face).find do |f|
-        f.valid? && f.normal.z > 0.9
-      end
-      next unless top_face
-      begin
-        top_face.pushpull(delta, false)
-      rescue
-        next
-      end
-      inst.set_attribute(DICT, 'الارتفاع سم', new_wall_h_cm)
+when 'center'
+  inset = [data['center_inset'].to_f.cm, 1.cm].max
+  drop = selected_drop
+  center = offset_polygon(room_pts, inset)
+  if polygon_usable?(center)
+    add_poly_component(model, room_ents, ts('السقف الساقط الأوسط'),
+                       nil, center,
+                       base_z - drop, drop, common.merge(
+                         'الجزء' => 'منتصف ساقط', 'الارتداد سم' => data['center_inset'].to_f,
+                         'مقدار النزول سم' => data['center_drop'].to_f))
+    light_reference = { kind: :perimeter, source_pts: room_pts,
+                        distance: inset + data['light_inset'].to_f.cm,
+                        underside_z: base_z - drop, strips: [] }
+  end
+when 'center_hidden_led'
+  inset = [data['center_led_inset'].to_f.cm, 5.cm].max
+  drop = selected_drop
+  panel_thickness = [data['center_led_thickness'].to_f.cm, 0.5.cm].max
+  panel_thickness = [panel_thickness, drop * 0.6].min
+  island = offset_polygon(room_pts, inset)
+  if polygon_usable?(island)
+    panel_bottom_z = base_z - drop
+    panel_top_z = panel_bottom_z + panel_thickness
+    led_inset = [data['light_inset'].to_f.cm, 0.5.cm].max
+    led_width = [data['light_width'].to_f.cm, 0.3.cm].max
+    led_outer = offset_polygon(island, led_inset)
+    led_inner = offset_polygon(island, led_inset + led_width)
+    support = offset_polygon(island, led_inset + led_width + 2.cm)
+    add_poly_component(model, room_ents, ts('جزيرة السقف الساقطة'), nil,
+                       island, panel_bottom_z, panel_thickness,
+                       common.merge('الجزء' => 'جزيرة ساقطة بليد مخفي',
+                                    'الارتداد سم' => data['center_led_inset'].to_f,
+                                    'مقدار النزول سم' => data['center_led_drop'].to_f,
+                                    'سمك لوح الجزيرة سم' => data['center_led_thickness'].to_f))
+    if polygon_usable?(support) && base_z > panel_top_z
+      add_poly_component(model, room_ents, ts('قلب تثبيت الجزيرة'), nil,
+                         support, panel_top_z, base_z - panel_top_z,
+                         common.merge('الجزء' => 'قلب تثبيت مخفي'))
+    end
+    if polygon_usable?(led_outer) && polygon_usable?(led_inner)
+      light_reference = { kind: :direct, outer: led_outer, inner: led_inner,
+                          underside_z: panel_top_z,
+                          glow_surface: :horizontal, glow_path: led_outer,
+                          glow_spread: :outward, strips: [] }
     end
   end
-
-  def move_ceiling_by_delta(room_group, delta)
-    tr = Geom::Transformation.translation(Geom::Vector3d.new(0, 0, delta))
-    room_group.entities.to_a.each do |inst|
-      next unless inst.valid?
-      next unless inst.is_a?(Sketchup::ComponentInstance)
-      next unless inst.get_attribute(DICT, 'النوع').to_s == 'سقف'
-      inst.transform!(tr)
+when 'double_hidden_led'
+  cove_width = [data['combo_cove_width'].to_f.cm, 5.cm].max
+  cove_drop = [data['combo_cove_drop'].to_f.cm, 1.cm].max
+  cove_hand_width = [data['combo_cove_lip_width'].to_f.cm, 1.cm].max
+  cove_hand_thickness = [data['combo_cove_lip_height'].to_f.cm, 0.5.cm].max
+  cove_hand_thickness = [cove_hand_thickness, cove_drop * 0.35].min
+  box_inner = offset_polygon(room_pts, cove_width)
+  hand_inner = offset_polygon(box_inner, cove_hand_width) if polygon_usable?(box_inner)
+  references = []
+  if polygon_usable?(box_inner) && polygon_usable?(hand_inner)
+    box_bottom_z = base_z - cove_drop
+    add_ring_component(model, room_ents, ts('صندوق بيت النور المدمج'), nil,
+                       outer_pts, box_inner, box_bottom_z, cove_drop,
+                       common.merge('الجزء' => 'بيت نور محيطي مدمج',
+                                    'عرض بيت النور سم' => data['combo_cove_width'].to_f,
+                                    'مقدار النزول سم' => data['combo_cove_drop'].to_f))
+    add_ring_component(model, room_ents, ts('اليد المخفية المحيطية'), nil,
+                       box_inner, hand_inner, box_bottom_z, cove_hand_thickness,
+                       common.merge('الجزء' => 'يد إضاءة محيطية مخفية',
+                                    'بروز اليد سم' => data['combo_cove_lip_width'].to_f,
+                                    'سمك اليد سم' => data['combo_cove_lip_height'].to_f))
+    led_width = [data['light_width'].to_f.cm, 0.3.cm].max
+    cove_led_inner = offset_polygon(box_inner, led_width)
+    if polygon_usable?(cove_led_inner)
+      references << { kind: :direct, outer: box_inner, inner: cove_led_inner,
+                      underside_z: box_bottom_z + cove_hand_thickness,
+                      glow_surface: :horizontal, glow_path: box_inner,
+                      glow_spread: :inward, strips: [] }
     end
   end
-
-  def rebuild_room_walls(room_group, pts, outward_pts, wall_h, wall_t,
-                         wall_h_cm, wall_t_cm, room_name, room_uuid)
-    model = Sketchup.active_model
-    count = pts.length
-    stamp = Time.now.to_i
-    delete_room_parts(room_group, 'حائط')
-    count.times do |i|
-      j = (i + 1) % count
-      wall_number = format('%02d', i + 1)
-      wall_name = "#{ts('حائط')} #{wall_number}"
-      wall_def = model.definitions.add("#{room_name}_#{wall_name}_#{stamp}_#{rand(9999)}")
-      add_prism(wall_def.entities, pts[i], pts[j], outward_pts[j], outward_pts[i], 0, wall_h)
-      wall_inst = room_group.entities.add_instance(wall_def, Geom::Transformation.new)
-      wall_inst.name = wall_name
-      wall_inst.layer = tag(model, "#{room_name} | #{wall_name}")
-      set_attrs(wall_inst, {
-        'UUID' => uuid,
-        'Room_UUID' => room_uuid,
-        'النوع' => 'حائط',
-        'اسم الغرفة' => room_name,
-        'رقم الحائط' => i + 1,
-        'الاسم' => wall_name,
-        'الارتفاع سم' => wall_h_cm,
-        'السمك سم' => wall_t_cm,
-        'طول الحائط سم' => pts[i].distance(pts[j]).to_cm.round(2),
-        'P1' => pt_to_s(pts[i]),
-        'P2' => pt_to_s(pts[j]),
-        'P3' => pt_to_s(outward_pts[j]),
-        'P4' => pt_to_s(outward_pts[i])
-      })
+  island_inset = [data['combo_center_inset'].to_f.cm, cove_width + cove_hand_width + 5.cm].max
+  island_drop = [data['combo_center_drop'].to_f.cm, 1.cm].max
+  panel_thickness = [data['combo_center_thickness'].to_f.cm, 0.5.cm].max
+  panel_thickness = [panel_thickness, island_drop * 0.6].min
+  island = offset_polygon(room_pts, island_inset)
+  if polygon_usable?(island)
+    panel_bottom_z = base_z - island_drop
+    panel_top_z = panel_bottom_z + panel_thickness
+    led_inset = [data['light_inset'].to_f.cm, 0.5.cm].max
+    led_width = [data['light_width'].to_f.cm, 0.3.cm].max
+    island_led_outer = offset_polygon(island, led_inset)
+    island_led_inner = offset_polygon(island, led_inset + led_width)
+    support = offset_polygon(island, led_inset + led_width + 2.cm)
+    add_poly_component(model, room_ents, ts('الجزيرة الساقطة المدمجة'), nil,
+                       island, panel_bottom_z, panel_thickness,
+                       common.merge('الجزء' => 'جزيرة وسط بليد مخفي',
+                                    'الارتداد سم' => data['combo_center_inset'].to_f,
+                                    'مقدار النزول سم' => data['combo_center_drop'].to_f,
+                                    'سمك اللوح سم' => data['combo_center_thickness'].to_f))
+    if polygon_usable?(support) && base_z > panel_top_z
+      add_poly_component(model, room_ents, ts('قلب تثبيت الجزيرة المدمجة'), nil,
+                         support, panel_top_z, base_z - panel_top_z,
+                         common.merge('الجزء' => 'قلب تثبيت مخفي'))
+    end
+    if polygon_usable?(island_led_outer) && polygon_usable?(island_led_inner)
+      references << { kind: :direct, outer: island_led_outer, inner: island_led_inner,
+                      underside_z: panel_top_z,
+                      glow_surface: :horizontal, glow_path: island_led_outer,
+                      glow_spread: :outward, strips: [] }
     end
   end
+  light_reference = references unless references.empty?
+when 'strips'
+  strips = ceiling_strip_polygons(room_pts, data)
+  drop = selected_drop
+  strips.each_with_index do |strip_pts, index|
+    add_poly_component(model, room_ents, format(ts('شريط السقف %02d'), index + 1),
+                       nil,
+                       strip_pts, base_z - drop, drop,
+                       common.merge('الجزء' => 'شريط', 'رقم الشريط' => index + 1,
+                                    'مقدار النزول سم' => data['strip_drop'].to_f))
+  end
+  light_reference = { kind: :strips, underside_z: base_z - drop, strips: strips }
+when 'hidden_cove'
+  cove_width = [data['cove_inset'].to_f.cm, 5.cm].max
+  drop = selected_drop
+  hand_projection = [data['cove_lip_width'].to_f.cm, 1.cm].max
+  hand_thickness = [data['cove_lip_height'].to_f.cm, 0.5.cm].max
+  box_inner = offset_polygon(room_pts, cove_width)
+  hand_inner = offset_polygon(box_inner, hand_projection) if polygon_usable?(box_inner)
+  if polygon_usable?(box_inner) && polygon_usable?(hand_inner)
+    box_bottom_z = base_z - drop
+    add_ring_component(model, room_ents, ts('صندوق بيت النور المحيطي'), nil,
+                       outer_pts, box_inner, box_bottom_z, drop,
+                       common.merge('الجزء' => 'صندوق بيت نور محيطي',
+                                    'عرض بيت النور سم' => data['cove_inset'].to_f,
+                                    'مقدار النزول سم' => data['cove_drop'].to_f))
+    add_ring_component(model, room_ents, ts('اليد المخفية'), nil,
+                       box_inner, hand_inner, box_bottom_z,
+                       [hand_thickness, drop * 0.35].min,
+                       common.merge('الجزء' => 'يد إضاءة مخفية',
+                                    'بروز اليد سم' => data['cove_lip_width'].to_f,
+                                    'سمك اليد سم' => data['cove_lip_height'].to_f))
+    led_width = [data['light_width'].to_f.cm, 0.3.cm].max
+    led_inner = offset_polygon(box_inner, led_width)
+    light_reference = { kind: :direct, outer: box_inner, inner: led_inner,
+                        underside_z: box_bottom_z + [hand_thickness, drop * 0.35].min,
+                        glow_surface: :horizontal, glow_path: box_inner,
+                        strips: [] }
+  end
+end
 
-  def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, room_uuid)
-    model = Sketchup.active_model
-    delete_room_parts(room_group, 'أرضية')
-    return if floor_t <= 0
-    stamp = Time.now.to_i
-    floor_def = model.definitions.add("#{room_name}_أرضية_#{stamp}_#{rand(9999)}")
-    floor_face = floor_def.entities.add_face(outward_pts)
-    return unless floor_face
+if enabled_value?(data['light_enabled'])
+  references = light_reference.is_a?(Array) ? light_reference : [light_reference]
+  references.compact.each do |reference|
+    build_ceiling_lighting(model, room_ents, room_name, room_uuid, outer_pts,
+                           reference, data)
+  end
+end
+
+
+end
+
+def ceiling_strip_polygons(outer_pts, data)
+xs = outer_pts.map(&:x); ys = outer_pts.map(&:y)
+min_x, max_x = xs.minmax; min_y, max_y = ys.minmax
+size_x = max_x - min_x; size_y = max_y - min_y
+longitudinal_x = size_x >= size_y
+run_x = longitudinal_value?(data['strip_direction']) ? longitudinal_x : !longitudinal_x
+count = [[data['strip_count'].to_i, 1].max, 20].min
+width = [data['strip_width'].to_f.cm, 1.cm].max
+gap = [data['strip_gap'].to_f.cm, 0.cm].max
+cross_size = run_x ? size_y : size_x
+total = count * width + (count - 1) * gap
+if total > cross_size
+width = [(cross_size - (count - 1) * gap) / count, 1.cm].max
+total = count * width + (count - 1) * gap
+end
+start = (run_x ? min_y : min_x) + (cross_size - total) / 2.0
+Array.new(count) do |i|
+a = start + i * (width + gap)
+if run_x
+rect_points(min_x, a, max_x, a + width)
+else
+rect_points(a, min_y, a + width, max_y)
+end
+end
+end
+
+def build_ceiling_lighting(model, room_ents, room_name, room_uuid, outer_pts, ref, data)
+mode = data['light_mode'].to_s
+mode = 'both' unless %w[groove effect both].include?(mode)
+width = [data['light_width'].to_f.cm, 0.3.cm].max
+depth = [data['light_depth'].to_f.cm, 0.1.cm].max
+margin = [data['light_margin'].to_f.cm, 0.cm].max
+color = data['light_color'].to_s
+glow_intensity = [[data['glow_intensity'].to_f, 0.0].max, 100.0].min
+glow_size = [data['glow_size'].to_f.cm, 0.0].max
+groove_mat = led_material(model, color, true)
+attrs = {
+'Room_UUID' => room_uuid, 'اسم الغرفة' => room_name,
+'عرض المجرى سم' => data['light_width'].to_f,
+'عمق المجرى سم' => data['light_depth'].to_f,
+'لون الإضاءة' => color,
+'شدة الإضاءة %' => glow_intensity,
+'حجم انتشار الإضاءة سم' => data['glow_size'].to_f
+}
+if ref[:kind] == :strips
+ref[:strips].each_with_index do |poly, index|
+xs = poly.map(&:x); ys = poly.map(&:y)
+min_x,max_x = xs.minmax; min_y,max_y = ys.minmax
+run_x = (max_x-min_x) >= (max_y-min_y)
+if run_x
+cy = (min_y+max_y)/2.0
+led_poly = rect_points(min_x+margin, cy-width/2.0, max_x-margin, cy+width/2.0)
+else
+cx = (min_x+max_x)/2.0
+led_poly = rect_points(cx-width/2.0, min_y+margin, cx+width/2.0, max_y-margin)
+end
+next unless polygon_usable?(led_poly)
+add_light_parts(model, room_ents, room_name, index + 1, led_poly, nil,
+ref[:underside_z], depth, mode, attrs, groove_mat,
+color, glow_intensity, glow_size,
+ref[:glow_direction] || :down,
+ref[:glow_surface] || :vertical, ref[:glow_path],
+ref[:glow_spread] || :inward)
+end
+elsif ref[:kind] == :direct
+ring_outer = ref[:outer]
+ring_inner = ref[:inner]
+return unless polygon_usable?(ring_outer) && polygon_usable?(ring_inner)
+add_light_parts(model, room_ents, room_name, 1, ring_outer, ring_inner,
+ref[:underside_z], depth, mode, attrs, groove_mat,
+color, glow_intensity, glow_size,
+ref[:glow_direction] || :down,
+ref[:glow_surface] || :vertical, ref[:glow_path],
+ref[:glow_spread] || :inward)
+else
+d1 = [ref[:distance].to_f, 0.2.cm].max
+d2 = d1 + width
+source_pts = ref[:source_pts] || outer_pts
+ring_outer = offset_polygon(source_pts, d1)
+ring_inner = offset_polygon(source_pts, d2)
+return unless polygon_usable?(ring_outer) && polygon_usable?(ring_inner)
+add_light_parts(model, room_ents, room_name, 1, ring_outer, ring_inner,
+ref[:underside_z], depth, mode, attrs, groove_mat,
+color, glow_intensity, glow_size,
+ref[:glow_direction] || :down,
+ref[:glow_surface] || :vertical, ref[:glow_path],
+ref[:glow_spread] || :inward)
+end
+end
+
+def add_light_parts(model, room_ents, room_name, number, outer, inner, underside_z,
+depth, mode, attrs, groove_mat,
+color, glow_intensity, glow_size, glow_direction = :down,
+glow_surface = :vertical, custom_glow_path = nil,
+glow_spread = :inward)
+if mode == 'groove' || mode == 'both'
+name = number > 1 ? format(ts('مجرى إضاءة %02d'), number) : ts('مجرى الإضاءة')
+if inner
+add_ring_component(model, room_ents, name, nil,
+outer, inner, underside_z - 0.2.mm, depth,
+attrs.merge('النوع' => 'مجرى إضاءة'), groove_mat)
+else
+add_poly_component(model, room_ents, name, nil,
+outer, underside_z - 0.2.mm, depth,
+attrs.merge('النوع' => 'مجرى إضاءة'), groove_mat)
+end
+end
+return unless mode == 'effect' || mode == 'both'
+glow_path = custom_glow_path || inner || outer
+if glow_surface == :horizontal
+add_horizontal_gradient_glow(model, room_ents, room_name, glow_path,
+underside_z, glow_size, color, glow_intensity, attrs,
+glow_spread)
+else
+add_vertical_gradient_glow(model, room_ents, room_name, glow_path,
+underside_z, glow_size, color, glow_intensity, attrs,
+glow_direction)
+end
+end
+
+def build_from_data(data)
+model = Sketchup.active_model
+face = selected_face
+unless face
+UI.messagebox(ts('حدد Face الأرضية الأول'))
+return
+end
+room_name = data['room_name'].to_s.strip
+room_name = ts('الغرفة') if room_name.empty?
+wall_h_cm  = data['wall_h'].to_f
+wall_t_cm  = data['wall_t'].to_f
+floor_t_cm = data['floor_t'].to_f
+ceil_t_cm  = data['ceil_t'].to_f
+create_floor = enabled_value?(data['create_floor'])
+create_ceiling = enabled_value?(data['create_ceiling'])
+ceiling_pattern = data['ceiling_pattern'].to_s
+if wall_h_cm <= 0 || wall_t_cm <= 0
+UI.messagebox(ts('ارتفاع وسمك الحائط لازم يكونوا أكبر من صفر'))
+return
+end
+wall_h  = wall_h_cm.cm
+wall_t  = wall_t_cm.cm
+floor_t = floor_t_cm.cm
+ceil_t  = ceil_t_cm.cm
+model.start_operation('MHD Room Builder', true)
+pts = face.outer_loop.vertices.map { |v| v.position }
+pts.reverse! if signed_area_xy(pts) < 0
+count = pts.length
+outward_pts = []
+count.times do |i|
+p_prev = pts[(i - 1) % count]
+p_curr = pts[i]
+p_next = pts[(i + 1) % count]
+d_prev = p_prev.vector_to(p_curr)
+d_curr = p_curr.vector_to(p_next)
+d_prev.normalize!
+d_curr.normalize!
+out_prev = d_prev.cross(Z_AXIS)
+out_curr = d_curr.cross(Z_AXIS)
+out_prev.normalize!
+out_curr.normalize!
+out_prev.length = wall_t
+out_curr.length = wall_t
+a1 = p_prev.offset(out_prev)
+b1 = p_curr.offset(out_curr)
+inter = line_intersection_2d(a1, d_prev, b1, d_curr)
+inter ||= p_curr.offset(out_curr)
+outward_pts << inter
+end
+stamp = Time.now.to_i
+room_uuid = uuid
+room_group = model.active_entities.add_group
+room_group.name = room_name
+room_group.layer = tag(model, room_name)
+
+
+# ✅ جديد: حفظ محيط الغرفة والبيانات الكاملة للتعديل الذكي
+save_room_pts(room_group, pts)
+save_build_data(room_group, data)
+
+set_attrs(room_group, {
+  'UUID' => room_uuid,
+  'النوع' => 'غرفة',
+  'اسم الغرفة' => room_name,
+  'ارتفاع الحائط سم' => wall_h_cm,
+  'سمك الحائط سم' => wall_t_cm,
+  'سمك الأرضية سم' => floor_t_cm,
+  'سمك السقف سم' => ceil_t_cm,
+  'إنشاء أرضية' => create_floor ? 'نعم' : 'لا',
+  'إنشاء سقف' => create_ceiling ? 'نعم' : 'لا',
+  'نمط السقف' => ceiling_pattern,
+  'طريقة حساب السقوط' => data['drop_reference'].to_s,
+  'تاريخ الإنشاء' => Time.now.strftime('%Y-%m-%d %H:%M')
+})
+room_ents = room_group.entities
+if create_floor && floor_t > 0
+  floor_def = model.definitions.add("#{room_name}_أرضية_#{stamp}")
+  floor_face = floor_def.entities.add_face(outward_pts)
+  if floor_face
     floor_face.reverse! if floor_face.normal.z < 0
     floor_face.pushpull(-floor_t)
-    floor_inst = room_group.entities.add_instance(floor_def, Geom::Transformation.new)
+    floor_inst = room_ents.add_instance(floor_def, Geom::Transformation.new)
     floor_inst.name = ts('الأرضية')
     floor_inst.layer = tag(model, "#{room_name} | #{ts('الأرضية')}")
     set_attrs(floor_inst, {
@@ -609,1063 +2034,106 @@ module MHD_RoomBuilder_Context
       'السمك سم' => floor_t_cm
     })
   end
+end
+if create_ceiling && ceil_t > 0
+  build_ceiling(model, room_ents, room_name, room_uuid, outward_pts,
+                pts, wall_h, ceil_t, ceil_t_cm, data)
+end
+count.times do |i|
+  j = (i + 1) % count
+  wall_number = format('%02d', i + 1)
+  wall_name = "#{ts('حائط')} #{wall_number}"
+  p1 = pts[i]
+  p2 = pts[j]
+  p3 = outward_pts[j]
+  p4 = outward_pts[i]
+  wall_def = model.definitions.add("#{room_name}_#{wall_name}_#{stamp}")
+  add_prism(wall_def.entities, p1, p2, p3, p4, 0, wall_h)
+  wall_inst = room_ents.add_instance(wall_def, Geom::Transformation.new)
+  wall_inst.name = wall_name
+  wall_inst.layer = tag(model, "#{room_name} | #{wall_name}")
+  set_attrs(wall_inst, {
+    'UUID' => uuid,
+    'Room_UUID' => room_uuid,
+    'النوع' => 'حائط',
+    'اسم الغرفة' => room_name,
+    'رقم الحائط' => i + 1,
+    'الاسم' => wall_name,
+    'الارتفاع سم' => wall_h_cm,
+    'السمك سم' => wall_t_cm,
+    'طول الحائط سم' => p1.distance(p2).to_cm.round(2),
+    'P1' => pt_to_s(p1),
+    'P2' => pt_to_s(p2),
+    'P3' => pt_to_s(p3),
+    'P4' => pt_to_s(p4)
+  })
+end
+model.commit_operation
+UI.messagebox(ts('تم بناء الغرفة بنجاح'))
 
-  def apply_smart_room_update(room_group, new_data)
-    old_data = build_data_from_group(room_group) || {}
-    pts = room_pts_from_group(room_group)
-    if old_data.empty? || !pts || pts.length < 3
-      return rebuild_entire_room(room_group, new_data)
-    end
-    model = Sketchup.active_model
-    model.start_operation('MHD Smart Room Update', true)
-    begin
-      room_uuid = room_group.get_attribute(DICT, 'UUID').to_s
-      room_uuid = uuid if room_uuid.empty?
-      name_old = old_data['room_name'].to_s
-      name_new = new_data['room_name'].to_s
-      name_new = ts('الغرفة') if name_new.strip.empty?
-      wall_h_old = old_data['wall_h'].to_f
-      wall_h_new = new_data['wall_h'].to_f
-      wall_t_old = old_data['wall_t'].to_f
-      wall_t_new = new_data['wall_t'].to_f
-      floor_t_old = old_data['floor_t'].to_f
-      floor_t_new = new_data['floor_t'].to_f
-      ceil_t_old = old_data['ceil_t'].to_f
-      ceil_t_new = new_data['ceil_t'].to_f
-      floor_on_old   = enabled_value?(old_data['create_floor'])
-      floor_on_new   = enabled_value?(new_data['create_floor'])
-      ceiling_on_old = enabled_value?(old_data['create_ceiling'])
-      ceiling_on_new = enabled_value?(new_data['create_ceiling'])
-      name_changed     = name_old != name_new
-      wall_h_changed   = (wall_h_old - wall_h_new).abs > 0.001
-      wall_t_changed   = (wall_t_old - wall_t_new).abs > 0.001
-      floor_t_changed  = (floor_t_old - floor_t_new).abs > 0.001
-      floor_toggle     = floor_on_old != floor_on_new
-      floor_changed    = floor_t_changed || floor_toggle
-      ceiling_toggle   = ceiling_on_old != ceiling_on_new
-      ceiling_t_changed = (ceil_t_old - ceil_t_new).abs > 0.001
-      ceiling_visual   = ceiling_settings_differ?(old_data, new_data)
-      light_changed    = light_settings_differ?(old_data, new_data)
-      ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual || light_changed
 
-      if name_changed
-        begin
-          room_group.name = name_new
-          room_group.layer = tag(model, name_new)
-        rescue
-        end
-        old_prefix = "#{name_old} | "
-        room_group.entities.to_a.each do |e|
-          next unless e.valid? && e.respond_to?(:layer)
-          current_name = e.layer.name.to_s rescue ''
-          if current_name.start_with?(old_prefix)
-            suffix = current_name[old_prefix.length..-1]
-            begin
-              e.layer = tag(model, "#{name_new} | #{suffix}")
-            rescue
-            end
-          end
-        end
-      end
+rescue => e
+model.abort_operation rescue nil
+UI.messagebox("Error:\n#{e.message}")
+end
 
-      if wall_t_changed
-        new_outward = compute_outward_pts(pts, wall_t_new.cm)
-        rebuild_room_walls(room_group, pts, new_outward,
-                           wall_h_new.cm, wall_t_new.cm,
-                           wall_h_new, wall_t_new, name_new, room_uuid)
-        delete_room_parts(room_group, 'أرضية')
-        rebuild_room_floor(room_group, new_outward, floor_t_new.cm,
-                           floor_t_new, name_new, room_uuid) if floor_on_new && floor_t_new > 0
-        delete_room_parts(room_group, 'سقف')
-        if ceiling_on_new && ceil_t_new > 0
-          build_ceiling(model, room_group, name_new, room_uuid,
-                        new_outward, pts,
-                        wall_h_new.cm, ceil_t_new.cm, ceil_t_new, new_data)
-        end
-      else
-        if wall_h_changed
-          delta_h = (wall_h_new - wall_h_old).cm
-          resize_existing_walls(room_group, delta_h, wall_h_new)
-          move_ceiling_by_delta(room_group, delta_h) unless ceiling_needs_rebuild
-        end
-        if floor_changed
-          current_outward = compute_outward_pts(pts, wall_t_old.cm)
-          if floor_on_new && floor_t_new > 0
-            rebuild_room_floor(room_group, current_outward, floor_t_new.cm,
-                               floor_t_new, name_new, room_uuid)
-          else
-            delete_room_parts(room_group, 'أرضية')
-          end
-        end
-        if ceiling_needs_rebuild
-          delete_room_parts(room_group, 'سقف')
-          if ceiling_on_new && ceil_t_new > 0
-            current_outward = compute_outward_pts(pts, wall_t_old.cm)
-            build_ceiling(model, room_group, name_new, room_uuid,
-                          current_outward, pts,
-                          wall_h_new.cm, ceil_t_new.cm, ceil_t_new, new_data)
-          end
-        end
-      end
+def build
+dialog_input
+end
 
-      save_build_data(room_group, new_data)
-      room_group.set_attribute(DICT, 'اسم الغرفة', name_new)
-      room_group.set_attribute(DICT, 'ارتفاع الحائط سم', wall_h_new)
-      room_group.set_attribute(DICT, 'سمك الحائط سم', wall_t_new)
-      room_group.set_attribute(DICT, 'سمك الأرضية سم', floor_t_new)
-      room_group.set_attribute(DICT, 'سمك السقف سم', ceil_t_new)
-      room_group.set_attribute(DICT, 'إنشاء أرضية', floor_on_new ? 'نعم' : 'لا')
-      room_group.set_attribute(DICT, 'إنشاء سقف', ceiling_on_new ? 'نعم' : 'لا')
-      room_group.set_attribute(DICT, 'نمط السقف', new_data['ceiling_pattern'].to_s)
-      room_group.set_attribute(DICT, 'تاريخ آخر تعديل', Time.now.strftime('%Y-%m-%d %H:%M'))
+unless file_loaded?(__FILE__)
+UI.add_context_menu_handler do |menu|
+model = Sketchup.active_model
+selection = model.selection.to_a
 
-      model.commit_operation
-      model.active_view.invalidate
-      UI.messagebox("✅ #{ts('تم تعديل الغرفة بنجاح')}")
-      true
-    rescue => e
-      model.abort_operation rescue nil
-      UI.messagebox("❌ #{ts('خطأ أثناء التعديل')}:\n#{e.message}")
-      false
-    end
+
+  # بناء غرفة جديدة من Face محدد
+  if selected_face
+    menu.add_separator
+    menu.add_item(ts(MENU_BUILD)) { build }
   end
 
-  def rebuild_entire_room(room_group, new_data)
-    pts = room_pts_from_group(room_group)
-    unless pts
-      UI.messagebox("❌ لا يمكن قراءة محيط الغرفة الأصلي.")
-      return false
-    end
-    model = Sketchup.active_model
-    model.start_operation('MHD Rebuild Room', true)
-    begin
-      room_uuid = room_group.get_attribute(DICT, 'UUID').to_s
-      room_uuid = uuid if room_uuid.empty?
-      name = new_data['room_name'].to_s.strip
-      name = ts('الغرفة') if name.empty?
-      wall_h_cm  = new_data['wall_h'].to_f
-      wall_t_cm  = new_data['wall_t'].to_f
-      floor_t_cm = new_data['floor_t'].to_f
-      ceil_t_cm  = new_data['ceil_t'].to_f
-      floor_on   = enabled_value?(new_data['create_floor'])
-      ceiling_on = enabled_value?(new_data['create_ceiling'])
-      room_group.entities.clear!
-      outward = compute_outward_pts(pts, wall_t_cm.cm)
-      rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid) if floor_on && floor_t_cm > 0
-      if ceiling_on && ceil_t_cm > 0
-        build_ceiling(model, room_group, name, room_uuid,
-                      outward, pts,
-                      wall_h_cm.cm, ceil_t_cm.cm, ceil_t_cm, new_data)
-      end
-      rebuild_room_walls(room_group, pts, outward,
-                         wall_h_cm.cm, wall_t_cm.cm,
-                         wall_h_cm, wall_t_cm, name, room_uuid)
-      room_group.name = name
-      room_group.layer = tag(model, name)
-      save_build_data(room_group, new_data)
-      room_group.set_attribute(DICT, 'اسم الغرفة', name)
-      room_group.set_attribute(DICT, 'ارتفاع الحائط سم', wall_h_cm)
-      room_group.set_attribute(DICT, 'سمك الحائط سم', wall_t_cm)
-      room_group.set_attribute(DICT, 'سمك الأرضية سم', floor_t_cm)
-      room_group.set_attribute(DICT, 'سمك السقف سم', ceil_t_cm)
-      model.commit_operation
-      model.active_view.invalidate
-      UI.messagebox("✅ #{ts('تم إعادة بناء الغرفة بنجاح')}")
-      true
-    rescue => e
-      model.abort_operation rescue nil
-      UI.messagebox("❌ #{e.message}")
-      false
-    end
+  # تعديل غرفة موجودة
+  room_group = nil
+  selection.each do |entity|
+    room_group = find_room_group(entity)
+    break if room_group
   end
 
-  def open_edit_room_dialog(room_group)
-    return unless room_group && room_group.valid?
-    saved = build_data_from_group(room_group)
-    unless saved && !saved.empty?
-      UI.messagebox("⚠️ لا توجد بيانات محفوظة لهذه الغرفة.")
-      return
-    end
-    merged = saved_values.merge(saved)
-    dlg = UI::HtmlDialog.new(
-      dialog_title: "#{ts('تعديل الغرفة')} - MRDESIGN",
-      preferences_key: PREF_KEY,
-      scrollable: false,
-      resizable: true,
-      width: 330,
-      height: 720,
-      style: UI::HtmlDialog::STYLE_DIALOG
-    )
-    html = html_dialog_content(merged)
-    html = html.gsub('>إنشاء<', ">#{ts('حفظ التعديلات')}<")
-    html = html.gsub('>إلغاء<', ">#{ts('إغلاق')}<")
-    dlg.set_html(html)
-    dlg.add_action_callback('cancel') { dlg.close }
-    dlg.add_action_callback('submit') do |_, json|
-      begin
-        data = JSON.parse(json)
-        save_values(data)
-        dlg.close
-        apply_smart_room_update(room_group, data)
-      rescue => e
-        UI.messagebox("Error:\n#{e.message}")
-      end
-    end
-    dlg.show
-  end
+  if room_group
+    menu.add_separator
+    menu.add_item(ts('⚙️ تعديل الغرفة')) { open_edit_room_dialog(room_group) }
 
-  class RoomEditPickTool
-    def activate
-      Sketchup.status_text = ts('انقر على أي جزء من الغرفة لتعديل خصائصها')
+    # كمر: يظهر عند تحديد حائط أو كمر
+    wall_entity = selection.find do |entity|
+      entity.respond_to?(:get_attribute) &&
+        entity.get_attribute(DICT, 'النوع').to_s == 'حائط'
     end
-    def onLButtonDown(_flags, x, y, view)
-      ph = view.pick_helper
-      ph.do_pick(x, y)
-      ent = ph.best_picked
-      if ent
-        room = MHD_RoomBuilder_Context.find_room_group(ent)
-        if room
-          MHD_RoomBuilder_Context.open_edit_room_dialog(room)
-        else
-          UI.messagebox(ts('هذا العنصر ليس جزءاً من غرفة MHD'))
-        end
-      else
-        UI.messagebox(ts('لم يتم تحديد أي عنصر'))
-      end
+    beam_entity = selection.find do |entity|
+      entity.respond_to?(:get_attribute) &&
+        entity.get_attribute(DICT, 'النوع').to_s == 'كمر'
     end
-    def onCancel(_reason, _view)
-      Sketchup.active_model.select_tool(nil)
+
+    if wall_entity
+      menu.add_item(ts('➕ إضافة كمر للحائط')) { open_beam_dialog(wall_entity) }
+    elsif beam_entity
+      menu.add_item(ts('⚙️ تعديل الكمر')) { open_beam_dialog(beam_entity) }
     end
   end
+end
 
-  def activate_room_edit_picker
-    Sketchup.active_model.select_tool(RoomEditPickTool.new)
-  end
+# قائمة Plugins للأداة التفاعلية
+UI.menu('Plugins').add_item(ts('MHD - تعديل غرفة (نقر تفاعلي)')) do
+  activate_room_edit_picker
+end
 
-  def find_room_group(entity)
-    return nil unless entity && entity.respond_to?(:valid?) && entity.valid?
-    if entity.is_a?(Sketchup::Group) &&
-       entity.get_attribute(DICT, 'النوع') == 'غرفة'
-      return entity
-    end
-    uuid_v = ''
-    current = entity
-    depth = 0
-    while current && depth < 20
-      begin
-        u = current.get_attribute(DICT, 'Room_UUID').to_s
-        uuid_v = u unless u.empty?
-        if current.is_a?(Sketchup::Group) &&
-           current.get_attribute(DICT, 'النوع') == 'غرفة'
-          return current
-        end
-        parent_ents = current.parent rescue nil
-        break unless parent_ents
-        container = parent_ents.parent rescue nil
-        break unless container
-        break if container.is_a?(Sketchup::Model)
-        current = container
-        depth += 1
-      rescue
-        break
-      end
-    end
-    return nil if uuid_v.empty?
-    find_group_by_uuid(Sketchup.active_model.entities, uuid_v)
-  rescue
-    nil
-  end
+UI.menu('Plugins').add_separator
+UI.menu('Plugins').add_item(ts('MHD - إضافة/تعديل كمر (نقر تفاعلي)')) do
+  activate_beam_picker
+end
 
-  def find_group_by_uuid(entities, uuid_v)
-    entities.each do |e|
-      next unless e.is_a?(Sketchup::Group) && e.respond_to?(:valid?) && e.valid?
-      return e if e.get_attribute(DICT, 'UUID').to_s == uuid_v
-      nested = find_group_by_uuid(e.entities, uuid_v) rescue nil
-      return nested if nested
-    end
-    nil
-  end
-  # =========================================================
-  # END SMART ROOM EDIT ENGINE V5
-  # =========================================================
+file_loaded(__FILE__)
 
-  # -------------------------
-  # Modern HTML Dialog
-  # -------------------------
-  def html_dialog_content(values)
-    v = values
-    floor_on = enabled_value?(v['create_floor']) ? 'on' : ''
-    ceil_on  = enabled_value?(v['create_ceiling']) ? 'on' : ''
-    light_on = enabled_value?(v['light_enabled']) ? 'on' : ''
-    floor_txt = enabled_value?(v['create_floor']) ? ts('نعم') : ts('لا')
-    ceil_txt  = enabled_value?(v['create_ceiling']) ? ts('نعم') : ts('لا')
-    light_txt = enabled_value?(v['light_enabled']) ? ts('نعم') : ts('لا')
-    yes_label = JSON.generate(ts('نعم'))
-    no_label = JSON.generate(ts('لا'))
-    label_align = ui_direction == 'rtl' ? 'right' : 'left'
 
-    html = <<-HTML
-<!DOCTYPE html>
-<html lang="#{ui_locale}" dir="#{ui_direction}">
-<head>
-<meta charset="UTF-8">
-<title>MHD Room Builder</title>
-<style>
-  *{box-sizing:border-box}
-  body{margin:0;font-family:Arial,Tahoma,sans-serif;background:#07131d;color:#eaf4f8;overflow:hidden;direction:#{ui_direction};}
-  ::-webkit-scrollbar{width:8px}
-  ::-webkit-scrollbar-track{background:#07131d}
-  ::-webkit-scrollbar-thumb{background:#1d3444;border-radius:20px;border:2px solid #07131d}
-  .app{height:100vh;display:flex;flex-direction:column;background:#07131d}
-  .hero{height:74px;padding:10px 12px;display:flex;align-items:center;gap:10px;background:linear-gradient(135deg,#07131d,#0c2230);border-bottom:1px solid #1c3342;}
-  .logo{width:58px;height:58px;object-fit:contain;background:#081722;border:1px solid #1c3342;border-radius:10px;padding:5px;flex:0 0 auto;}
-  .head-text{flex:1;overflow:hidden;text-align:center}
-  .title-main{font-size:20px;font-weight:900;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2}
-  .subtitle{margin-top:6px;font-size:11px;line-height:1.5;color:#9fb6c5;height:32px;overflow:hidden}
-  .wrap{height:calc(100vh - 74px - 58px);overflow:auto;padding:10px;background:#07131d}
-  .group{background:#0b1b27;border:1px solid #1c3342;border-radius:10px;margin-bottom:10px;overflow:hidden}
-  .group-title{padding:9px 10px;background:#0f2433;color:#39a245;font-size:16px;font-weight:900;border-bottom:1px solid #1c3342;user-select:none}
-  .group-body{padding:8px 8px 10px}
-  .field-row{display:grid;grid-template-columns:105px 1fr;gap:8px;align-items:center;margin-bottom:7px}
-  .field-row:last-child{margin-bottom:0}
-  label{font-size:13px;font-weight:900;color:#d8e8ef;text-align:#{label_align};line-height:1.3}
-  input[type=text],input[type=number],select{width:100%;height:30px;padding:4px 8px;border:none;border-radius:6px;background:#111f2a;color:#fff;font-size:13px;outline:1px solid #243d4f;text-align:center;}
-  input[type=text]:focus,input[type=number]:focus,select:focus{outline:2px solid #39a245;background:#0d1b25}
-  select{cursor:pointer}
-  input[type=color]{width:100%;height:30px;padding:2px;border:1px solid #243d4f;border-radius:6px;background:#111f2a}
-  .switch-row{display:grid;grid-template-columns:105px 1fr;gap:8px;align-items:center;margin-bottom:7px}
-  .toggle{height:30px;background:#111f2a;border-radius:6px;outline:1px solid #243d4f;display:flex;align-items:center;justify-content:space-between;padding:0 8px;cursor:pointer;user-select:none;color:#fff;font-size:12px;}
-  .toggle .dot{width:16px;height:16px;border-radius:50%;background:#355467;border:1px solid #57798a}
-  .toggle.on .dot{background:#39a245;border-color:#39a245}
-  .collapsible{cursor:pointer;display:flex;align-items:center;justify-content:space-between}
-  .collapsible .arrow{font-size:12px;transition:.2s}
-  .group.closed .group-body{display:none}
-  .group.closed .arrow{transform:rotate(90deg)}
-  .conditional{display:none}
-  .conditional.active{display:block}
-  .patterns-scroll{display:flex;gap:8px;overflow-x:auto;overflow-y:hidden;padding:2px 2px 9px;scroll-behavior:smooth}
-  .pattern-card{flex:0 0 112px;background:#0b1b27;border:1px solid #243d4f;border-radius:10px;padding:6px;cursor:pointer;text-align:center;transition:.15s;user-select:none}
-  .pattern-card.active{border-color:#39a245;box-shadow:0 0 0 1px #39a24566;background:#0f2433}
-  .pattern-img{height:68px;border-radius:7px;background-size:cover;background-position:center;background-repeat:no-repeat;background-color:#182836;border:1px solid #1c3342}
-  .pattern-name{font-size:11px;font-weight:900;color:#d8e8ef;line-height:1.3;margin-top:6px;min-height:29px;display:flex;align-items:center;justify-content:center}
-  .hint{font-size:11px;color:#8eabbc;line-height:1.55;padding:4px 2px 0}
-  .footer{height:58px;padding:8px 10px;border-top:1px solid #1c3342;background:#07131d;display:flex;gap:8px}
-  button{height:40px;border-radius:10px;font-size:14px;font-weight:900;cursor:pointer;border:none}
-  .ok{flex:2;background:#4de37a;color:#061923}
-  .cancel{flex:1;background:#0b1b27;color:#fff;border:1px solid #243d4f}
-</style>
-</head>
-<body>
-<div class="app">
-  <div class="hero">
-    <img class="logo" src="#{LOGO_URL}">
-    <div class="head-text">
-      <div class="title-main">بناء الحوائط</div>
-      <div class="subtitle">تم تصميم هذه الأداة بواسطة MHDESIGN<br>Room Builder V4.0</div>
-    </div>
-  </div>
-  <div class="wrap">
-    <div class="group">
-      <div class="group-title">▼ بيانات الغرفة</div>
-      <div class="group-body">
-        <div class="field-row"><label>اسم الغرفة</label><input id="room_name" type="text" value="#{v['room_name']}"></div>
-      </div>
-    </div>
-    <div class="group">
-      <div class="group-title">▼ المقاسات</div>
-      <div class="group-body">
-        <div class="field-row"><label>ارتفاع الحائط سم</label><input id="wall_h" type="number" step="0.1" value="#{v['wall_h']}"></div>
-        <div class="field-row"><label>سمك الحائط سم</label><input id="wall_t" type="number" step="0.1" value="#{v['wall_t']}"></div>
-        <div class="field-row"><label>سمك الأرضية سم</label><input id="floor_t" type="number" step="0.1" value="#{v['floor_t']}"></div>
-        <div class="field-row"><label>سمك السقف سم</label><input id="ceil_t" type="number" step="0.1" value="#{v['ceil_t']}"></div>
-      </div>
-    </div>
-    <div class="group">
-      <div class="group-title">▼ عناصر إضافية</div>
-      <div class="group-body">
-        <div class="switch-row"><label>إنشاء أرضية</label><div id="create_floor" class="toggle #{floor_on}" onclick="toggle(this)"><span>#{floor_txt}</span><b class="dot"></b></div></div>
-        <div class="switch-row"><label>إنشاء سقف</label><div id="create_ceiling" class="toggle #{ceil_on}" onclick="toggle(this)"><span>#{ceil_txt}</span><b class="dot"></b></div></div>
-      </div>
-    </div>
-    <div id="ceiling_group" class="group">
-      <div class="group-title collapsible" onclick="collapseGroup(this)"><span>خيارات السقف</span><span class="arrow">▼</span></div>
-      <div class="group-body">
-        <input id="ceiling_pattern" type="hidden" value="#{v['ceiling_pattern']}">
-        <div class="patterns-scroll">
-          <div class="pattern-card #{v['ceiling_pattern']=='flat' ? 'active' : ''}" data-pattern="flat" onclick="selectCeilingPattern(this)"><div class="pattern-img" style="background-image:url('https://mhdesign-eg.com/SKETCHUP022/wall/1.png')"></div><div class="pattern-name">سقف فلات</div></div>
-          <div class="pattern-card #{v['ceiling_pattern']=='perimeter' ? 'active' : ''}" data-pattern="perimeter" onclick="selectCeilingPattern(this)"><div class="pattern-img" style="background-image:url('https://mhdesign-eg.com/SKETCHUP022/wall/2.png')"></div><div class="pattern-name">ساقط محيطي</div></div>
-          <div class="pattern-card #{v['ceiling_pattern']=='center' ? 'active' : ''}" data-pattern="center" onclick="selectCeilingPattern(this)"><div class="pattern-img" style="background-image:url('https://mhdesign-eg.com/SKETCHUP022/wall/3.png')"></div><div class="pattern-name">ساقط من المنتصف</div></div>
-          <div class="pattern-card #{v['ceiling_pattern']=='center_hidden_led' ? 'active' : ''}" data-pattern="center_hidden_led" onclick="selectCeilingPattern(this)"><div class="pattern-img" style="background-image:url('https://mhdesign-eg.com/SKETCHUP022/wall/4.png')"></div><div class="pattern-name">منتصف + ليد مخفي</div></div>
-          <div class="pattern-card #{v['ceiling_pattern']=='double_hidden_led' ? 'active' : ''}" data-pattern="double_hidden_led" onclick="selectCeilingPattern(this)"><div class="pattern-img" style="background-image:url('https://mhdesign-eg.com/SKETCHUP022/wall/5.png')"></div><div class="pattern-name">بيت نور + منتصف مخفي</div></div>
-          <div class="pattern-card #{v['ceiling_pattern']=='strips' ? 'active' : ''}" data-pattern="strips" onclick="selectCeilingPattern(this)"><div class="pattern-img" style="background-image:url('https://mhdesign-eg.com/SKETCHUP022/wall/7.png')"></div><div class="pattern-name">شرائط طولية / عرضية</div></div>
-          <div class="pattern-card #{v['ceiling_pattern']=='hidden_cove' ? 'active' : ''}" data-pattern="hidden_cove" onclick="selectCeilingPattern(this)"><div class="pattern-img" style="background-image:url('https://mhdesign-eg.com/SKETCHUP022/wall/6.png')"></div><div class="pattern-name">بيت نور مخفي</div></div>
-        </div>
-        <div id="drop_reference_row" class="field-row"><label>حساب السقوط</label>
-          <select id="drop_reference">
-            <option value="below_wall" #{v['drop_reference']=='below_wall' ? 'selected' : ''}>أسفل ارتفاع الحائط</option>
-            <option value="wall_is_finish" #{v['drop_reference']=='wall_is_finish' ? 'selected' : ''}>ارتفاع الحائط بعد السقوط</option>
-          </select>
-        </div>
-        <div id="drop_reference_hint" class="hint">اختر هل قيمة ارتفاع الحائط تمثل السقف الأساسي أم الارتفاع الصافي أسفل الجزء الساقط.</div>
-
-        <div id="opts_flat" class="conditional"><div class="hint">سقف كامل بمستوى واحد حسب ارتفاع الحائط وسمك السقف.</div></div>
-        <div id="opts_perimeter" class="conditional">
-          <div class="field-row"><label>عرض الإطار سم</label><input id="perimeter_width" type="number" step="0.1" value="#{v['perimeter_width']}"></div>
-          <div class="field-row"><label>نزول الإطار سم</label><input id="perimeter_drop" type="number" step="0.1" value="#{v['perimeter_drop']}"></div>
-        </div>
-        <div id="opts_center" class="conditional">
-          <div class="field-row"><label>ارتداد المنتصف سم</label><input id="center_inset" type="number" step="0.1" value="#{v['center_inset']}"></div>
-          <div class="field-row"><label>نزول المنتصف سم</label><input id="center_drop" type="number" step="0.1" value="#{v['center_drop']}"></div>
-        </div>
-        <div id="opts_center_hidden_led" class="conditional">
-          <div class="field-row"><label>ارتداد الجزيرة سم</label><input id="center_led_inset" type="number" step="0.1" value="#{v['center_led_inset']}"></div>
-          <div class="field-row"><label>مقدار السقوط سم</label><input id="center_led_drop" type="number" step="0.1" value="#{v['center_led_drop']}"></div>
-          <div class="field-row"><label>سمك لوح الجزيرة سم</label><input id="center_led_thickness" type="number" step="0.1" value="#{v['center_led_thickness']}"></div>
-        </div>
-        <div id="opts_double_hidden_led" class="conditional">
-          <div class="field-row"><label>عرض بيت النور سم</label><input id="combo_cove_width" type="number" step="0.1" value="#{v['combo_cove_width']}"></div>
-          <div class="field-row"><label>نزول بيت النور سم</label><input id="combo_cove_drop" type="number" step="0.1" value="#{v['combo_cove_drop']}"></div>
-          <div class="field-row"><label>بروز اليد للداخل سم</label><input id="combo_cove_lip_width" type="number" step="0.1" value="#{v['combo_cove_lip_width']}"></div>
-          <div class="field-row"><label>سمك اليد سم</label><input id="combo_cove_lip_height" type="number" step="0.1" value="#{v['combo_cove_lip_height']}"></div>
-          <div class="field-row"><label>ارتداد الجزيرة سم</label><input id="combo_center_inset" type="number" step="0.1" value="#{v['combo_center_inset']}"></div>
-          <div class="field-row"><label>نزول الجزيرة سم</label><input id="combo_center_drop" type="number" step="0.1" value="#{v['combo_center_drop']}"></div>
-          <div class="field-row"><label>سمك لوح الجزيرة سم</label><input id="combo_center_thickness" type="number" step="0.1" value="#{v['combo_center_thickness']}"></div>
-        </div>
-        <div id="opts_strips" class="conditional">
-          <div class="field-row"><label>اتجاه الشرائط</label><select id="strip_direction"><option value="longitudinal" #{longitudinal_value?(v['strip_direction']) ? 'selected' : ''}>طولي</option><option value="transverse" #{longitudinal_value?(v['strip_direction']) ? '' : 'selected'}>عرضي</option></select></div>
-          <div class="field-row"><label>عدد الشرائط</label><input id="strip_count" type="number" min="1" max="20" step="1" value="#{v['strip_count']}"></div>
-          <div class="field-row"><label>عرض الشريط سم</label><input id="strip_width" type="number" step="0.1" value="#{v['strip_width']}"></div>
-          <div class="field-row"><label>المسافة بينهم سم</label><input id="strip_gap" type="number" step="0.1" value="#{v['strip_gap']}"></div>
-          <div class="field-row"><label>نزول الشرائط سم</label><input id="strip_drop" type="number" step="0.1" value="#{v['strip_drop']}"></div>
-        </div>
-        <div id="opts_hidden_cove" class="conditional">
-          <div class="field-row"><label>عرض بيت النور سم</label><input id="cove_inset" type="number" step="0.1" value="#{v['cove_inset']}"></div>
-          <div class="field-row"><label>مقدار النزول سم</label><input id="cove_drop" type="number" step="0.1" value="#{v['cove_drop']}"></div>
-          <div class="field-row"><label>بروز اليد للداخل سم</label><input id="cove_lip_width" type="number" step="0.1" value="#{v['cove_lip_width']}"></div>
-          <div class="field-row"><label>سمك اليد سم</label><input id="cove_lip_height" type="number" step="0.1" value="#{v['cove_lip_height']}"></div>
-        </div>
-      </div>
-    </div>
-    <div id="light_group" class="group">
-      <div class="group-title collapsible" onclick="collapseGroup(this)"><span>تأثير الإضاءة</span><span class="arrow">▼</span></div>
-      <div class="group-body">
-        <div class="switch-row"><label>تشغيل الإضاءة</label><div id="light_enabled" class="toggle #{light_on}" onclick="toggle(this);updateLight()"><span>#{light_txt}</span><b class="dot"></b></div></div>
-        <div id="light_options">
-          <div class="field-row"><label>طريقة التنفيذ</label><select id="light_mode"><option value="groove" #{v['light_mode']=='groove' ? 'selected' : ''}>مجرى فقط</option><option value="effect" #{v['light_mode']=='effect' ? 'selected' : ''}>تأثير فقط</option><option value="both" #{v['light_mode']=='both' ? 'selected' : ''}>مجرى + تأثير</option></select></div>
-          <div class="field-row"><label>ارتداد الإضاءة سم</label><input id="light_inset" type="number" step="0.1" value="#{v['light_inset']}"></div>
-          <div class="field-row"><label>عرض المجرى سم</label><input id="light_width" type="number" step="0.1" value="#{v['light_width']}"></div>
-          <div class="field-row"><label>عمق المجرى سم</label><input id="light_depth" type="number" step="0.1" value="#{v['light_depth']}"></div>
-          <div class="field-row"><label>هامش البداية سم</label><input id="light_margin" type="number" step="0.1" value="#{v['light_margin']}"></div>
-          <div class="field-row"><label>لون التأثير</label><input id="light_color" type="color" value="#{v['light_color']}"></div>
-          <div class="field-row"><label>شدة الإضاءة %</label><input id="glow_intensity" type="number" min="0" max="100" step="1" value="#{v['glow_intensity']}"></div>
-          <div class="field-row"><label>حجم الانتشار سم</label><input id="glow_size" type="number" min="0" step="0.5" value="#{v['glow_size']}"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div class="footer">
-    <button class="ok" onclick="submitData()">إنشاء</button>
-    <button class="cancel" onclick="sketchup.cancel()">إلغاء</button>
-  </div>
-</div>
-<script>
-document.addEventListener('contextmenu', function(e){e.preventDefault();});
-document.addEventListener('dragstart', function(e){e.preventDefault();});
-function toggle(el){
-  el.classList.toggle('on');
-  el.querySelector('span').textContent = el.classList.contains('on') ? #{yes_label} : #{no_label};
-}
-function collapseGroup(title){ title.parentElement.classList.toggle('closed'); }
-function selectCeilingPattern(el){
-  document.querySelectorAll('.pattern-card').forEach(card => card.classList.remove('active'));
-  el.classList.add('active');
-  document.getElementById('ceiling_pattern').value = el.dataset.pattern;
-  updatePattern();
-}
-function updatePattern(){
-  const pattern = val('ceiling_pattern');
-  document.querySelectorAll('.conditional').forEach(el => el.classList.remove('active'));
-  const box = document.getElementById('opts_' + pattern);
-  if(box) box.classList.add('active');
-  const dropped = pattern !== 'flat';
-  document.getElementById('drop_reference_row').style.display = dropped ? 'grid' : 'none';
-  document.getElementById('drop_reference_hint').style.display = dropped ? 'block' : 'none';
-}
-function updateLight(){
-  const on = document.getElementById('light_enabled').classList.contains('on');
-  document.getElementById('light_options').style.display = on ? 'block' : 'none';
-}
-function setCeilingVisibility(){
-  const on = document.getElementById('create_ceiling').classList.contains('on');
-  document.getElementById('ceiling_group').style.display = on ? 'block' : 'none';
-  document.getElementById('light_group').style.display = on ? 'block' : 'none';
-}
-function val(id){ return document.getElementById(id).value; }
-function yesNo(id){ return document.getElementById(id).classList.contains('on') ? 'yes' : 'no'; }
-function submitData(){
-  const data = {
-    room_name: val('room_name'),
-    wall_h: val('wall_h'), wall_t: val('wall_t'),
-    floor_t: val('floor_t'), ceil_t: val('ceil_t'),
-    create_floor: yesNo('create_floor'), create_ceiling: yesNo('create_ceiling'),
-    ceiling_pattern: val('ceiling_pattern'),
-    perimeter_width: val('perimeter_width'), perimeter_drop: val('perimeter_drop'),
-    center_inset: val('center_inset'), center_drop: val('center_drop'),
-    center_led_inset: val('center_led_inset'), center_led_drop: val('center_led_drop'),
-    center_led_thickness: val('center_led_thickness'),
-    combo_cove_width: val('combo_cove_width'), combo_cove_drop: val('combo_cove_drop'),
-    combo_cove_lip_width: val('combo_cove_lip_width'), combo_cove_lip_height: val('combo_cove_lip_height'),
-    combo_center_inset: val('combo_center_inset'), combo_center_drop: val('combo_center_drop'),
-    combo_center_thickness: val('combo_center_thickness'),
-    strip_direction: val('strip_direction'), strip_count: val('strip_count'),
-    strip_width: val('strip_width'), strip_gap: val('strip_gap'), strip_drop: val('strip_drop'),
-    cove_inset: val('cove_inset'), cove_drop: val('cove_drop'),
-    cove_lip_width: val('cove_lip_width'), cove_lip_height: val('cove_lip_height'),
-    drop_reference: val('drop_reference'),
-    light_enabled: yesNo('light_enabled'), light_mode: val('light_mode'),
-    light_inset: val('light_inset'), light_width: val('light_width'),
-    light_depth: val('light_depth'), light_margin: val('light_margin'),
-    light_color: val('light_color'), glow_intensity: val('glow_intensity'),
-    glow_size: val('glow_size')
-  };
-  sketchup.submit(JSON.stringify(data));
-}
-document.getElementById('create_ceiling').addEventListener('click', function(){setTimeout(setCeilingVisibility,0)});
-updatePattern(); updateLight(); setCeilingVisibility();
-</script>
-</body>
-</html>
-    HTML
-    ts(html)
-  end
-
-  def dialog_input
-    unless selected_face
-      UI.messagebox(ts('حدد Face الأرضية الأول'))
-      return
-    end
-    dlg = UI::HtmlDialog.new(
-      dialog_title: ts('بناء الحوائط'),
-      preferences_key: PREF_KEY,
-      scrollable: false,
-      resizable: true,
-      width: 330,
-      height: 720,
-      style: UI::HtmlDialog::STYLE_DIALOG
-    )
-    dlg.set_html(html_dialog_content(saved_values))
-    dlg.add_action_callback('cancel') { dlg.close }
-    dlg.add_action_callback('submit') do |_, json|
-      data = JSON.parse(json)
-      save_values(data)
-      dlg.close
-      build_from_data(data)
-    rescue => e
-      UI.messagebox("Error:\n#{e.message}")
-    end
-    dlg.show
-    nil
-  end
-
-  # -------------------------
-  # Build Ceiling (unchanged)
-  # -------------------------
-  def build_ceiling(model, room_ents, room_name, room_uuid, outer_pts, room_pts,
-                    wall_h, ceil_t, ceil_t_cm, data)
-    # ... [الكود الأصلي كما هو] ...
-    pattern = data['ceiling_pattern'].to_s
-    pattern = 'flat' unless %w[flat perimeter center center_hidden_led double_hidden_led strips hidden_cove].include?(pattern)
-    common = {
-      'Room_UUID' => room_uuid, 'النوع' => 'سقف', 'اسم الغرفة' => room_name,
-      'نمط السقف' => pattern, 'السمك سم' => ceil_t_cm
-    }
-    ceiling_def = model.definitions.add("#{room_name}_السقف_الكامل_#{Time.now.to_i}_#{rand(99999)}")
-    ceiling_inst = room_ents.add_instance(ceiling_def, Geom::Transformation.new)
-    ceiling_inst.name = ts('السقف')
-    ceiling_inst.layer = tag(model, "#{room_name} | #{ts('السقف')}")
-    set_attrs(ceiling_inst, common.merge('UUID' => uuid, 'الجزء' => 'السقف الكامل'))
-    room_ents = ceiling_def.entities
-
-    selected_drop = case pattern
-                    when 'perimeter' then [data['perimeter_drop'].to_f.cm, 0.5.cm].max
-                    when 'center' then [data['center_drop'].to_f.cm, 0.5.cm].max
-                    when 'center_hidden_led' then [data['center_led_drop'].to_f.cm, 1.cm].max
-                    when 'double_hidden_led'
-                      [[data['combo_cove_drop'].to_f.cm, 1.cm].max,
-                       [data['combo_center_drop'].to_f.cm, 1.cm].max].max
-                    when 'strips' then [data['strip_drop'].to_f.cm, 0.5.cm].max
-                    when 'hidden_cove' then [data['cove_drop'].to_f.cm, 0.5.cm].max
-                    else 0.0
-                    end
-    drop_reference = data['drop_reference'].to_s
-    drop_reference = 'below_wall' unless %w[below_wall wall_is_finish].include?(drop_reference)
-    base_z = (pattern != 'flat' && drop_reference == 'wall_is_finish') ? wall_h + selected_drop : wall_h
-    common['طريقة حساب السقوط'] = drop_reference
-
-    add_poly_component(model, room_ents, ts('السقف الأساسي'), nil,
-                       outer_pts, base_z, ceil_t, common.merge('الجزء' => 'أساسي'))
-
-    light_reference = { kind: :perimeter, source_pts: room_pts,
-                        distance: data['light_inset'].to_f.cm,
-                        underside_z: base_z, strips: [] }
-
-    case pattern
-    when 'perimeter'
-      width = [data['perimeter_width'].to_f.cm, 1.cm].max
-      drop = selected_drop
-      inner = offset_polygon(room_pts, width)
-      if polygon_usable?(inner)
-        add_ring_component(model, room_ents, ts('السقف الساقط المحيطي'),
-                           nil, outer_pts, inner,
-                           base_z - drop, drop, common.merge(
-                             'الجزء' => 'إطار محيطي', 'عرض الإطار سم' => data['perimeter_width'].to_f,
-                             'مقدار النزول سم' => data['perimeter_drop'].to_f))
-        light_reference = { kind: :perimeter, source_pts: room_pts,
-                            distance: [width - data['light_inset'].to_f.cm, 0.2.cm].max,
-                            underside_z: base_z - drop, strips: [] }
-      end
-    when 'center'
-      inset = [data['center_inset'].to_f.cm, 1.cm].max
-      drop = selected_drop
-      center = offset_polygon(room_pts, inset)
-      if polygon_usable?(center)
-        add_poly_component(model, room_ents, ts('السقف الساقط الأوسط'),
-                           nil, center,
-                           base_z - drop, drop, common.merge(
-                             'الجزء' => 'منتصف ساقط', 'الارتداد سم' => data['center_inset'].to_f,
-                             'مقدار النزول سم' => data['center_drop'].to_f))
-        light_reference = { kind: :perimeter, source_pts: room_pts,
-                            distance: inset + data['light_inset'].to_f.cm,
-                            underside_z: base_z - drop, strips: [] }
-      end
-    when 'center_hidden_led'
-      inset = [data['center_led_inset'].to_f.cm, 5.cm].max
-      drop = selected_drop
-      panel_thickness = [data['center_led_thickness'].to_f.cm, 0.5.cm].max
-      panel_thickness = [panel_thickness, drop * 0.6].min
-      island = offset_polygon(room_pts, inset)
-      if polygon_usable?(island)
-        panel_bottom_z = base_z - drop
-        panel_top_z = panel_bottom_z + panel_thickness
-        led_inset = [data['light_inset'].to_f.cm, 0.5.cm].max
-        led_width = [data['light_width'].to_f.cm, 0.3.cm].max
-        led_outer = offset_polygon(island, led_inset)
-        led_inner = offset_polygon(island, led_inset + led_width)
-        support = offset_polygon(island, led_inset + led_width + 2.cm)
-        add_poly_component(model, room_ents, ts('جزيرة السقف الساقطة'), nil,
-                           island, panel_bottom_z, panel_thickness,
-                           common.merge('الجزء' => 'جزيرة ساقطة بليد مخفي',
-                                        'الارتداد سم' => data['center_led_inset'].to_f,
-                                        'مقدار النزول سم' => data['center_led_drop'].to_f,
-                                        'سمك لوح الجزيرة سم' => data['center_led_thickness'].to_f))
-        if polygon_usable?(support) && base_z > panel_top_z
-          add_poly_component(model, room_ents, ts('قلب تثبيت الجزيرة'), nil,
-                             support, panel_top_z, base_z - panel_top_z,
-                             common.merge('الجزء' => 'قلب تثبيت مخفي'))
-        end
-        if polygon_usable?(led_outer) && polygon_usable?(led_inner)
-          light_reference = { kind: :direct, outer: led_outer, inner: led_inner,
-                              underside_z: panel_top_z,
-                              glow_surface: :horizontal, glow_path: led_outer,
-                              glow_spread: :outward, strips: [] }
-        end
-      end
-    when 'double_hidden_led'
-      cove_width = [data['combo_cove_width'].to_f.cm, 5.cm].max
-      cove_drop = [data['combo_cove_drop'].to_f.cm, 1.cm].max
-      cove_hand_width = [data['combo_cove_lip_width'].to_f.cm, 1.cm].max
-      cove_hand_thickness = [data['combo_cove_lip_height'].to_f.cm, 0.5.cm].max
-      cove_hand_thickness = [cove_hand_thickness, cove_drop * 0.35].min
-      box_inner = offset_polygon(room_pts, cove_width)
-      hand_inner = offset_polygon(box_inner, cove_hand_width) if polygon_usable?(box_inner)
-      references = []
-      if polygon_usable?(box_inner) && polygon_usable?(hand_inner)
-        box_bottom_z = base_z - cove_drop
-        add_ring_component(model, room_ents, ts('صندوق بيت النور المدمج'), nil,
-                           outer_pts, box_inner, box_bottom_z, cove_drop,
-                           common.merge('الجزء' => 'بيت نور محيطي مدمج',
-                                        'عرض بيت النور سم' => data['combo_cove_width'].to_f,
-                                        'مقدار النزول سم' => data['combo_cove_drop'].to_f))
-        add_ring_component(model, room_ents, ts('اليد المخفية المحيطية'), nil,
-                           box_inner, hand_inner, box_bottom_z, cove_hand_thickness,
-                           common.merge('الجزء' => 'يد إضاءة محيطية مخفية',
-                                        'بروز اليد سم' => data['combo_cove_lip_width'].to_f,
-                                        'سمك اليد سم' => data['combo_cove_lip_height'].to_f))
-        led_width = [data['light_width'].to_f.cm, 0.3.cm].max
-        cove_led_inner = offset_polygon(box_inner, led_width)
-        if polygon_usable?(cove_led_inner)
-          references << { kind: :direct, outer: box_inner, inner: cove_led_inner,
-                          underside_z: box_bottom_z + cove_hand_thickness,
-                          glow_surface: :horizontal, glow_path: box_inner,
-                          glow_spread: :inward, strips: [] }
-        end
-      end
-      island_inset = [data['combo_center_inset'].to_f.cm, cove_width + cove_hand_width + 5.cm].max
-      island_drop = [data['combo_center_drop'].to_f.cm, 1.cm].max
-      panel_thickness = [data['combo_center_thickness'].to_f.cm, 0.5.cm].max
-      panel_thickness = [panel_thickness, island_drop * 0.6].min
-      island = offset_polygon(room_pts, island_inset)
-      if polygon_usable?(island)
-        panel_bottom_z = base_z - island_drop
-        panel_top_z = panel_bottom_z + panel_thickness
-        led_inset = [data['light_inset'].to_f.cm, 0.5.cm].max
-        led_width = [data['light_width'].to_f.cm, 0.3.cm].max
-        island_led_outer = offset_polygon(island, led_inset)
-        island_led_inner = offset_polygon(island, led_inset + led_width)
-        support = offset_polygon(island, led_inset + led_width + 2.cm)
-        add_poly_component(model, room_ents, ts('الجزيرة الساقطة المدمجة'), nil,
-                           island, panel_bottom_z, panel_thickness,
-                           common.merge('الجزء' => 'جزيرة وسط بليد مخفي',
-                                        'الارتداد سم' => data['combo_center_inset'].to_f,
-                                        'مقدار النزول سم' => data['combo_center_drop'].to_f,
-                                        'سمك اللوح سم' => data['combo_center_thickness'].to_f))
-        if polygon_usable?(support) && base_z > panel_top_z
-          add_poly_component(model, room_ents, ts('قلب تثبيت الجزيرة المدمجة'), nil,
-                             support, panel_top_z, base_z - panel_top_z,
-                             common.merge('الجزء' => 'قلب تثبيت مخفي'))
-        end
-        if polygon_usable?(island_led_outer) && polygon_usable?(island_led_inner)
-          references << { kind: :direct, outer: island_led_outer, inner: island_led_inner,
-                          underside_z: panel_top_z,
-                          glow_surface: :horizontal, glow_path: island_led_outer,
-                          glow_spread: :outward, strips: [] }
-        end
-      end
-      light_reference = references unless references.empty?
-    when 'strips'
-      strips = ceiling_strip_polygons(room_pts, data)
-      drop = selected_drop
-      strips.each_with_index do |strip_pts, index|
-        add_poly_component(model, room_ents, format(ts('شريط السقف %02d'), index + 1),
-                           nil,
-                           strip_pts, base_z - drop, drop,
-                           common.merge('الجزء' => 'شريط', 'رقم الشريط' => index + 1,
-                                        'مقدار النزول سم' => data['strip_drop'].to_f))
-      end
-      light_reference = { kind: :strips, underside_z: base_z - drop, strips: strips }
-    when 'hidden_cove'
-      cove_width = [data['cove_inset'].to_f.cm, 5.cm].max
-      drop = selected_drop
-      hand_projection = [data['cove_lip_width'].to_f.cm, 1.cm].max
-      hand_thickness = [data['cove_lip_height'].to_f.cm, 0.5.cm].max
-      box_inner = offset_polygon(room_pts, cove_width)
-      hand_inner = offset_polygon(box_inner, hand_projection) if polygon_usable?(box_inner)
-      if polygon_usable?(box_inner) && polygon_usable?(hand_inner)
-        box_bottom_z = base_z - drop
-        add_ring_component(model, room_ents, ts('صندوق بيت النور المحيطي'), nil,
-                           outer_pts, box_inner, box_bottom_z, drop,
-                           common.merge('الجزء' => 'صندوق بيت نور محيطي',
-                                        'عرض بيت النور سم' => data['cove_inset'].to_f,
-                                        'مقدار النزول سم' => data['cove_drop'].to_f))
-        add_ring_component(model, room_ents, ts('اليد المخفية'), nil,
-                           box_inner, hand_inner, box_bottom_z,
-                           [hand_thickness, drop * 0.35].min,
-                           common.merge('الجزء' => 'يد إضاءة مخفية',
-                                        'بروز اليد سم' => data['cove_lip_width'].to_f,
-                                        'سمك اليد سم' => data['cove_lip_height'].to_f))
-        led_width = [data['light_width'].to_f.cm, 0.3.cm].max
-        led_inner = offset_polygon(box_inner, led_width)
-        light_reference = { kind: :direct, outer: box_inner, inner: led_inner,
-                            underside_z: box_bottom_z + [hand_thickness, drop * 0.35].min,
-                            glow_surface: :horizontal, glow_path: box_inner,
-                            strips: [] }
-      end
-    end
-
-    if enabled_value?(data['light_enabled'])
-      references = light_reference.is_a?(Array) ? light_reference : [light_reference]
-      references.compact.each do |reference|
-        build_ceiling_lighting(model, room_ents, room_name, room_uuid, outer_pts,
-                               reference, data)
-      end
-    end
-  end
-
-  def ceiling_strip_polygons(outer_pts, data)
-    xs = outer_pts.map(&:x); ys = outer_pts.map(&:y)
-    min_x, max_x = xs.minmax; min_y, max_y = ys.minmax
-    size_x = max_x - min_x; size_y = max_y - min_y
-    longitudinal_x = size_x >= size_y
-    run_x = longitudinal_value?(data['strip_direction']) ? longitudinal_x : !longitudinal_x
-    count = [[data['strip_count'].to_i, 1].max, 20].min
-    width = [data['strip_width'].to_f.cm, 1.cm].max
-    gap = [data['strip_gap'].to_f.cm, 0.cm].max
-    cross_size = run_x ? size_y : size_x
-    total = count * width + (count - 1) * gap
-    if total > cross_size
-      width = [(cross_size - (count - 1) * gap) / count, 1.cm].max
-      total = count * width + (count - 1) * gap
-    end
-    start = (run_x ? min_y : min_x) + (cross_size - total) / 2.0
-    Array.new(count) do |i|
-      a = start + i * (width + gap)
-      if run_x
-        rect_points(min_x, a, max_x, a + width)
-      else
-        rect_points(a, min_y, a + width, max_y)
-      end
-    end
-  end
-
-  def build_ceiling_lighting(model, room_ents, room_name, room_uuid, outer_pts, ref, data)
-    mode = data['light_mode'].to_s
-    mode = 'both' unless %w[groove effect both].include?(mode)
-    width = [data['light_width'].to_f.cm, 0.3.cm].max
-    depth = [data['light_depth'].to_f.cm, 0.1.cm].max
-    margin = [data['light_margin'].to_f.cm, 0.cm].max
-    color = data['light_color'].to_s
-    glow_intensity = [[data['glow_intensity'].to_f, 0.0].max, 100.0].min
-    glow_size = [data['glow_size'].to_f.cm, 0.0].max
-    groove_mat = led_material(model, color, true)
-    attrs = {
-      'Room_UUID' => room_uuid, 'اسم الغرفة' => room_name,
-      'عرض المجرى سم' => data['light_width'].to_f,
-      'عمق المجرى سم' => data['light_depth'].to_f,
-      'لون الإضاءة' => color,
-      'شدة الإضاءة %' => glow_intensity,
-      'حجم انتشار الإضاءة سم' => data['glow_size'].to_f
-    }
-    if ref[:kind] == :strips
-      ref[:strips].each_with_index do |poly, index|
-        xs = poly.map(&:x); ys = poly.map(&:y)
-        min_x,max_x = xs.minmax; min_y,max_y = ys.minmax
-        run_x = (max_x-min_x) >= (max_y-min_y)
-        if run_x
-          cy = (min_y+max_y)/2.0
-          led_poly = rect_points(min_x+margin, cy-width/2.0, max_x-margin, cy+width/2.0)
-        else
-          cx = (min_x+max_x)/2.0
-          led_poly = rect_points(cx-width/2.0, min_y+margin, cx+width/2.0, max_y-margin)
-        end
-        next unless polygon_usable?(led_poly)
-        add_light_parts(model, room_ents, room_name, index + 1, led_poly, nil,
-                        ref[:underside_z], depth, mode, attrs, groove_mat,
-                        color, glow_intensity, glow_size,
-                        ref[:glow_direction] || :down,
-                        ref[:glow_surface] || :vertical, ref[:glow_path],
-                        ref[:glow_spread] || :inward)
-      end
-    elsif ref[:kind] == :direct
-      ring_outer = ref[:outer]
-      ring_inner = ref[:inner]
-      return unless polygon_usable?(ring_outer) && polygon_usable?(ring_inner)
-      add_light_parts(model, room_ents, room_name, 1, ring_outer, ring_inner,
-                      ref[:underside_z], depth, mode, attrs, groove_mat,
-                      color, glow_intensity, glow_size,
-                      ref[:glow_direction] || :down,
-                      ref[:glow_surface] || :vertical, ref[:glow_path],
-                      ref[:glow_spread] || :inward)
-    else
-      d1 = [ref[:distance].to_f, 0.2.cm].max
-      d2 = d1 + width
-      source_pts = ref[:source_pts] || outer_pts
-      ring_outer = offset_polygon(source_pts, d1)
-      ring_inner = offset_polygon(source_pts, d2)
-      return unless polygon_usable?(ring_outer) && polygon_usable?(ring_inner)
-      add_light_parts(model, room_ents, room_name, 1, ring_outer, ring_inner,
-                      ref[:underside_z], depth, mode, attrs, groove_mat,
-                      color, glow_intensity, glow_size,
-                      ref[:glow_direction] || :down,
-                      ref[:glow_surface] || :vertical, ref[:glow_path],
-                      ref[:glow_spread] || :inward)
-    end
-  end
-
-  def add_light_parts(model, room_ents, room_name, number, outer, inner, underside_z,
-                      depth, mode, attrs, groove_mat,
-                      color, glow_intensity, glow_size, glow_direction = :down,
-                      glow_surface = :vertical, custom_glow_path = nil,
-                      glow_spread = :inward)
-    if mode == 'groove' || mode == 'both'
-      name = number > 1 ? format(ts('مجرى إضاءة %02d'), number) : ts('مجرى الإضاءة')
-      if inner
-        add_ring_component(model, room_ents, name, nil,
-                           outer, inner, underside_z - 0.2.mm, depth,
-                           attrs.merge('النوع' => 'مجرى إضاءة'), groove_mat)
-      else
-        add_poly_component(model, room_ents, name, nil,
-                           outer, underside_z - 0.2.mm, depth,
-                           attrs.merge('النوع' => 'مجرى إضاءة'), groove_mat)
-      end
-    end
-    return unless mode == 'effect' || mode == 'both'
-    glow_path = custom_glow_path || inner || outer
-    if glow_surface == :horizontal
-      add_horizontal_gradient_glow(model, room_ents, room_name, glow_path,
-                                   underside_z, glow_size, color, glow_intensity, attrs,
-                                   glow_spread)
-    else
-      add_vertical_gradient_glow(model, room_ents, room_name, glow_path,
-                                 underside_z, glow_size, color, glow_intensity, attrs,
-                                 glow_direction)
-    end
-  end
-
-  def build_from_data(data)
-    model = Sketchup.active_model
-    face = selected_face
-    unless face
-      UI.messagebox(ts('حدد Face الأرضية الأول'))
-      return
-    end
-    room_name = data['room_name'].to_s.strip
-    room_name = ts('الغرفة') if room_name.empty?
-    wall_h_cm  = data['wall_h'].to_f
-    wall_t_cm  = data['wall_t'].to_f
-    floor_t_cm = data['floor_t'].to_f
-    ceil_t_cm  = data['ceil_t'].to_f
-    create_floor = enabled_value?(data['create_floor'])
-    create_ceiling = enabled_value?(data['create_ceiling'])
-    ceiling_pattern = data['ceiling_pattern'].to_s
-    if wall_h_cm <= 0 || wall_t_cm <= 0
-      UI.messagebox(ts('ارتفاع وسمك الحائط لازم يكونوا أكبر من صفر'))
-      return
-    end
-    wall_h  = wall_h_cm.cm
-    wall_t  = wall_t_cm.cm
-    floor_t = floor_t_cm.cm
-    ceil_t  = ceil_t_cm.cm
-    model.start_operation('MHD Room Builder', true)
-    pts = face.outer_loop.vertices.map { |v| v.position }
-    pts.reverse! if signed_area_xy(pts) < 0
-    count = pts.length
-    outward_pts = []
-    count.times do |i|
-      p_prev = pts[(i - 1) % count]
-      p_curr = pts[i]
-      p_next = pts[(i + 1) % count]
-      d_prev = p_prev.vector_to(p_curr)
-      d_curr = p_curr.vector_to(p_next)
-      d_prev.normalize!
-      d_curr.normalize!
-      out_prev = d_prev.cross(Z_AXIS)
-      out_curr = d_curr.cross(Z_AXIS)
-      out_prev.normalize!
-      out_curr.normalize!
-      out_prev.length = wall_t
-      out_curr.length = wall_t
-      a1 = p_prev.offset(out_prev)
-      b1 = p_curr.offset(out_curr)
-      inter = line_intersection_2d(a1, d_prev, b1, d_curr)
-      inter ||= p_curr.offset(out_curr)
-      outward_pts << inter
-    end
-    stamp = Time.now.to_i
-    room_uuid = uuid
-    room_group = model.active_entities.add_group
-    room_group.name = room_name
-    room_group.layer = tag(model, room_name)
-
-    # ✅ جديد: حفظ محيط الغرفة والبيانات الكاملة للتعديل الذكي
-    save_room_pts(room_group, pts)
-    save_build_data(room_group, data)
-
-    set_attrs(room_group, {
-      'UUID' => room_uuid,
-      'النوع' => 'غرفة',
-      'اسم الغرفة' => room_name,
-      'ارتفاع الحائط سم' => wall_h_cm,
-      'سمك الحائط سم' => wall_t_cm,
-      'سمك الأرضية سم' => floor_t_cm,
-      'سمك السقف سم' => ceil_t_cm,
-      'إنشاء أرضية' => create_floor ? 'نعم' : 'لا',
-      'إنشاء سقف' => create_ceiling ? 'نعم' : 'لا',
-      'نمط السقف' => ceiling_pattern,
-      'طريقة حساب السقوط' => data['drop_reference'].to_s,
-      'تاريخ الإنشاء' => Time.now.strftime('%Y-%m-%d %H:%M')
-    })
-    room_ents = room_group.entities
-    if create_floor && floor_t > 0
-      floor_def = model.definitions.add("#{room_name}_أرضية_#{stamp}")
-      floor_face = floor_def.entities.add_face(outward_pts)
-      if floor_face
-        floor_face.reverse! if floor_face.normal.z < 0
-        floor_face.pushpull(-floor_t)
-        floor_inst = room_ents.add_instance(floor_def, Geom::Transformation.new)
-        floor_inst.name = ts('الأرضية')
-        floor_inst.layer = tag(model, "#{room_name} | #{ts('الأرضية')}")
-        set_attrs(floor_inst, {
-          'UUID' => uuid,
-          'Room_UUID' => room_uuid,
-          'النوع' => 'أرضية',
-          'اسم الغرفة' => room_name,
-          'السمك سم' => floor_t_cm
-        })
-      end
-    end
-    if create_ceiling && ceil_t > 0
-      build_ceiling(model, room_ents, room_name, room_uuid, outward_pts,
-                    pts, wall_h, ceil_t, ceil_t_cm, data)
-    end
-    count.times do |i|
-      j = (i + 1) % count
-      wall_number = format('%02d', i + 1)
-      wall_name = "#{ts('حائط')} #{wall_number}"
-      p1 = pts[i]
-      p2 = pts[j]
-      p3 = outward_pts[j]
-      p4 = outward_pts[i]
-      wall_def = model.definitions.add("#{room_name}_#{wall_name}_#{stamp}")
-      add_prism(wall_def.entities, p1, p2, p3, p4, 0, wall_h)
-      wall_inst = room_ents.add_instance(wall_def, Geom::Transformation.new)
-      wall_inst.name = wall_name
-      wall_inst.layer = tag(model, "#{room_name} | #{wall_name}")
-      set_attrs(wall_inst, {
-        'UUID' => uuid,
-        'Room_UUID' => room_uuid,
-        'النوع' => 'حائط',
-        'اسم الغرفة' => room_name,
-        'رقم الحائط' => i + 1,
-        'الاسم' => wall_name,
-        'الارتفاع سم' => wall_h_cm,
-        'السمك سم' => wall_t_cm,
-        'طول الحائط سم' => p1.distance(p2).to_cm.round(2),
-        'P1' => pt_to_s(p1),
-        'P2' => pt_to_s(p2),
-        'P3' => pt_to_s(p3),
-        'P4' => pt_to_s(p4)
-      })
-    end
-    model.commit_operation
-    UI.messagebox(ts('تم بناء الغرفة بنجاح'))
-  rescue => e
-    model.abort_operation rescue nil
-    UI.messagebox("Error:\n#{e.message}")
-  end
-
-  def build
-    dialog_input
-  end
-
-  unless file_loaded?(__FILE__)
-    UI.add_context_menu_handler do |menu|
-      model = Sketchup.active_model
-      selection = model.selection.to_a
-
-      # بناء غرفة جديدة من Face محدد
-      if selected_face
-        menu.add_separator
-        menu.add_item(ts(MENU_BUILD)) { build }
-      end
-
-      # تعديل غرفة موجودة
-      room_group = nil
-      selection.each do |entity|
-        room_group = find_room_group(entity)
-        break if room_group
-      end
-
-      if room_group
-        menu.add_separator
-        menu.add_item(ts('⚙️ تعديل الغرفة')) { open_edit_room_dialog(room_group) }
-      end
-    end
-
-    # قائمة Plugins للأداة التفاعلية
-    UI.menu('Plugins').add_item(ts('MHD - تعديل غرفة (نقر تفاعلي)')) do
-      activate_room_edit_picker
-    end
-
-    file_loaded(__FILE__)
-  end
+end
 end
