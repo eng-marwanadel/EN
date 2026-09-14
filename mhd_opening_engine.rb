@@ -4651,14 +4651,32 @@ module MHD_WALL_SURVEY_V1
   end
 
   # measure_mode:
-  #   'outside' => المسافة = الفراغ فقط. العنصر خارج المقاس. (الحرف الداخلي على المسافة)
-  #   'inside'  => المسافة = الفراغ + عرض العنصر. العنصر داخل المقاس. (الحرف الخارجي على المسافة)
+  #   'outside' => المسافة = الفراغ فقط. العنصر خارج المقاس.
+  #   'inside'  => المسافة = الفراغ + عرض العنصر. العنصر داخل المقاس.
   def resolve_item_offset(measure_cm, width_cm, side, wall_len_cm, measure_mode)
     case measure_mode.to_s
     when 'inside'
       side == 'شمال' ? wall_len_cm - measure_cm : measure_cm - width_cm
     else
       side == 'شمال' ? wall_len_cm - measure_cm - width_cm : measure_cm
+    end
+  end
+
+  # يحسب أسفل العنصر (Bottom Z) بالسنتيمتر حسب measure_mode:
+  #   'outside' => level_cm = المسافة من الأرض لأسفل العنصر. (خارج المقاس)
+  #   'inside'  => level_cm = المسافة من الأرض لأعلى العنصر. (داخل المقاس)
+  # level_mode = 'center' معناها level_cm هو مركز العنصر دائمًا.
+  def resolve_item_bottom_cm(level_cm, height_cm, level_mode, measure_mode)
+    lvl = level_cm.to_f
+    h = height_cm.to_f
+    if level_mode.to_s == 'bottom'
+      if measure_mode.to_s == 'inside'
+        lvl - h
+      else
+        lvl
+      end
+    else
+      lvl - h / 2.0
     end
   end
 
@@ -4750,10 +4768,14 @@ module MHD_WALL_SURVEY_V1
 
   def recess_inner_points(data, recess, segments = 20)
     center_x = recess['offset_cm'].to_f + recess['width_cm'].to_f / 2.0
-    center_z = recess['level_cm'].to_f
-    if recess['level_mode'].to_s == 'bottom'
-      center_z += recess['height_cm'].to_f / 2.0
-    end
+    bottom_z = resolve_item_bottom_cm(
+      recess['level_cm'],
+      recess['height_cm'],
+      recess['level_mode'],
+      recess['measure_mode']
+    )
+    center_z = bottom_z + recess['height_cm'].to_f / 2.0
+
     if recess['shape'].to_s == 'rect'
       half_width = recess['width_cm'].to_f / 2.0
       half_height = recess['height_cm'].to_f / 2.0
@@ -4784,7 +4806,13 @@ module MHD_WALL_SURVEY_V1
 
   def feed_box_drain_points(data, recess, depth_cm, segments = 20)
     center_x = recess['offset_cm'].to_f + recess['width_cm'].to_f / 2.0
-    center_z = recess['level_cm'].to_f + recess['height_cm'].to_f * 0.30
+    bottom_z = resolve_item_bottom_cm(
+      recess['level_cm'],
+      recess['height_cm'],
+      recess['level_mode'],
+      recess['measure_mode']
+    )
+    center_z = bottom_z + recess['height_cm'].to_f * 0.30
     radius = 2.0
     depth_vector = Geom::Vector3d.new(data[:out_vec].x, data[:out_vec].y, data[:out_vec].z)
     depth_vector.normalize!
@@ -5029,10 +5057,11 @@ module MHD_WALL_SURVEY_V1
     definition = definition_for(type)
     width = item['width_cm'].to_f
 
-    # نستخدم measure_mode المحفوظ مع العنصر (outside/inside) لحساب الموضع الصحيح.
+    # نستخدم measure_mode المحفوظ مع العنصر (outside/inside) لحساب الموضع الأفقي والرأسي.
     effective_measure_mode = item['measure_mode'].to_s
     effective_measure_mode = 'outside' unless %w[outside inside].include?(effective_measure_mode)
 
+    # الوضع الأفقي (X)
     offset = resolve_item_offset(
       item['measure_cm'].to_f,
       width,
@@ -5041,12 +5070,19 @@ module MHD_WALL_SURVEY_V1
       effective_measure_mode
     )
 
+    # الوضع الرأسي (Z) — أسفل العنصر بالسنتيمتر
+    target_bottom_cm = resolve_item_bottom_cm(
+      item['level_cm'].to_f,
+      item['height_cm'].to_f,
+      TYPES[type][:level_mode] || 'bottom',
+      effective_measure_mode
+    )
+
     x_center = offset + width / 2.0
     base_point = inner_point(data, x_center)
-    bounds = definition.bounds
-    placement_level_cm = item['level_cm'].to_f
-    placement_level_cm += bounds.height.to_cm / 2.0 if TYPES[type][:level_mode].to_s == 'bottom'
-    point = zpt(base_point, placement_level_cm)
+
+    # نضع أولاً العنصر عند الموضع الأفقي الصحيح ثم نصحح Z لاحقًا حسب bounds الفعلي.
+    point = zpt(base_point, 0)
 
     if type == 'socket'
       embed_vector = Geom::Vector3d.new(data[:out_vec].x, data[:out_vec].y, data[:out_vec].z)
@@ -5066,6 +5102,7 @@ module MHD_WALL_SURVEY_V1
     y_axis.normalize!
     wall_axes = Geom::Transformation.axes(point, x_axis, y_axis, Z_AXIS)
 
+    bounds = definition.bounds
     center = bounds.center
     anchor_y = flipped_model ? -bounds.max.y : -bounds.min.y
     local_anchor = Geom::Transformation.translation(
@@ -5074,10 +5111,17 @@ module MHD_WALL_SURVEY_V1
     transformation = wall_axes * local_anchor
     instance = model_entities_for(wall).add_instance(definition, transformation)
 
-    if TYPES[type][:level_mode].to_s == 'bottom'
-      target_bottom_z = base_point.z + item['level_cm'].to_f.cm
+    # تصحيح الوضع الرأسي: نضع أسفل الموديل الفعلي على target_bottom_cm.
+    if TYPES[type][:level_mode].to_s != 'center'
+      target_bottom_z = data[:p1].z + target_bottom_cm.cm
       actual_bottom_z = instance.bounds.min.z
       delta_z = target_bottom_z - actual_bottom_z
+      instance.transform!(Geom::Transformation.translation([0, 0, delta_z])) if delta_z.abs > 0.001
+    else
+      # level_mode = 'center': نضع مركز الموديل على level_cm (بغض النظر عن outside/inside)
+      target_center_z = data[:p1].z + item['level_cm'].to_f.cm
+      actual_center_z = instance.bounds.center.z
+      delta_z = target_center_z - actual_center_z
       instance.transform!(Geom::Transformation.translation([0, 0, delta_z])) if delta_z.abs > 0.001
     end
 
@@ -5089,15 +5133,11 @@ module MHD_WALL_SURVEY_V1
 
     if effective_measure_mode == 'inside'
       # العنصر بالكامل داخل المسافة.
-      # الحرف الخارجي (البعيد عن الحيط) على المسافة مباشرة.
+      # الحرف البعيد عن الحيط على المسافة مباشرة.
       if item['side'].to_s == 'شمال'
-        # من الشمال: العنصر داخل المنطقة [wall_len-measure, wall_len]
-        # الطرف الأيسر (البعيد عن الحيط) = wall_len - measure
         target_edge = (data[:wall_len_cm] - item['measure_cm'].to_f).cm
         horizontal_delta = target_edge - projections.min
       else
-        # من اليمين: العنصر داخل المنطقة [0, measure]
-        # الطرف الأيمن (البعيد عن الحيط) = measure
         target_edge = item['measure_cm'].to_f.cm
         horizontal_delta = target_edge - projections.max
       end
@@ -5139,7 +5179,12 @@ module MHD_WALL_SURVEY_V1
     bounds = definition.bounds
     offset = item['offset_cm'].to_f
     width = item['width_cm'].to_f
-    bottom = item['level_cm'].to_f
+    bottom_cm = resolve_item_bottom_cm(
+      item['level_cm'],
+      item['height_cm'],
+      item['level_mode'],
+      item['measure_mode']
+    )
     height = item['height_cm'].to_f
     depth = [item['depth_cm'].to_f, data[:wall_t].to_cm - EPS_CM].min
     depth_vector = Geom::Vector3d.new(data[:out_vec].x, data[:out_vec].y, data[:out_vec].z)
@@ -5148,7 +5193,7 @@ module MHD_WALL_SURVEY_V1
 
     [1.0 / 3.0, 2.0 / 3.0].each_with_index do |ratio, index|
       base_point = inner_point(data, offset + width * ratio).offset(depth_vector)
-      point = zpt(base_point, bottom + height * 0.68)
+      point = zpt(base_point, bottom_cm + height * 0.68)
       x_axis = reverse_vector(data[:dir])
       y_axis = Geom::Vector3d.new(data[:out_vec].x, data[:out_vec].y, data[:out_vec].z)
       y_axis.normalize!
@@ -5205,6 +5250,12 @@ module MHD_WALL_SURVEY_V1
       raise trf('SURVEY_ERR_DISTANCE','مسافة %{item} غير صحيحة',item:type_name(type)) if item['measure_cm'] < 0 || offset_cm < -0.001 || offset_cm + item['width_cm'] > data[:wall_len_cm] + 0.001
       raise trf('SURVEY_ERR_HEIGHT','ارتفاع %{item} خارج الحائط',item:type_name(type)) if item['level_cm'] < 0
 
+      # حساب أسفل العنصر (Z) حسب الوضع والاتجاه
+      item_bottom_cm = resolve_item_bottom_cm(
+        item['level_cm'], item['height_cm'], level_mode, measure_mode
+      )
+      item_top_cm = item_bottom_cm + item['height_cm']
+
       if spec[:kind] == 'opening'
         sill = type == 'window' ? item['level_cm'] : 0.0
         raise trf('SURVEY_ERR_HEIGHT','ارتفاع %{item} خارج الحائط',item:type_name(type)) if sill + item['height_cm'] >= data[:wall_h_cm]
@@ -5218,8 +5269,7 @@ module MHD_WALL_SURVEY_V1
         if spec[:kind].to_s == 'box_assembly' && (item['width_cm'] < 20 || item['height_cm'] < 20)
           raise tr('SURVEY_ERR_FEED_BOX_MIN','أقل مقاس لعلبة التغذية هو 20 × 20 سم')
         end
-        bottom = level_mode == 'bottom' ? item['level_cm'] : item['level_cm'] - item['height_cm'] / 2.0
-        raise trf('SURVEY_ERR_HEIGHT','ارتفاع %{item} خارج الحائط',item:type_name(type)) if bottom < 0 || bottom + item['height_cm'] > data[:wall_h_cm]
+        raise trf('SURVEY_ERR_HEIGHT','ارتفاع %{item} خارج الحائط',item:type_name(type)) if item_bottom_cm < 0 || item_top_cm > data[:wall_h_cm]
         item['depth_cm'] = spec[:custom_depth] ? raw['depth_cm'].to_f : spec[:depth].to_f
         raise trf('SURVEY_ERR_DEPTH','عمق %{item} غير صحيح',item:type_name(type)) if item['depth_cm'] <= 0 || item['depth_cm'] >= data[:wall_t].to_cm
         item['shape'] = spec[:shape].to_s
@@ -5227,8 +5277,8 @@ module MHD_WALL_SURVEY_V1
         recesses << item
         models << item if %w[model_recess box_assembly].include?(spec[:kind].to_s)
       else
-        if spec[:level_mode].to_s == 'bottom'
-          raise trf('SURVEY_ERR_HEIGHT','ارتفاع %{item} خارج الحائط',item:type_name(type)) if item['level_cm'] + item['height_cm'] > data[:wall_h_cm]
+        if level_mode == 'bottom'
+          raise trf('SURVEY_ERR_HEIGHT','ارتفاع %{item} خارج الحائط',item:type_name(type)) if item_bottom_cm < 0 || item_top_cm > data[:wall_h_cm]
         else
           half_height = item['height_cm'] / 2.0
           raise trf('SURVEY_ERR_HEIGHT','ارتفاع %{item} خارج الحائط',item:type_name(type)) if item['level_cm'] - half_height < 0 || item['level_cm'] + half_height > data[:wall_h_cm]
@@ -5236,16 +5286,9 @@ module MHD_WALL_SURVEY_V1
         models << item
       end
 
-      item_bottom = if spec[:kind].to_s == 'opening'
-                      type == 'door' ? 0.0 : item['level_cm']
-                    elsif level_mode == 'bottom'
-                      item['level_cm']
-                    else
-                      item['level_cm'] - item['height_cm'] / 2.0
-                    end
       current_box = {
         x1: offset_cm, x2: offset_cm + item['width_cm'],
-        z1: item_bottom, z2: item_bottom + item['height_cm']
+        z1: item_bottom_cm, z2: item_top_cm
       }
       collision_items.each do |previous|
         previous_box = previous[:box]
@@ -5441,7 +5484,22 @@ function itemOffset(it,s){
     ? WALL_LEN - it.measure_cm - it.width_cm
     : it.measure_cm;
 }
-function itemBox(it){const s=SPECS[it.type],x=itemOffset(it,s),bottom=s.kind==='opening'?(it.type==='door'?0:it.level_cm):(s.level_mode==='bottom'?it.level_cm:it.level_cm-it.height_cm/2);return{x1:x,x2:x+it.width_cm,z1:bottom,z2:bottom+it.height_cm};}
+
+// حساب أسفل العنصر على محور Z بناءً على:
+// - level_mode = 'bottom':
+//     outside => level_cm = المسافة من الأرض لأسفل العنصر
+//     inside  => level_cm = المسافة من الأرض لأعلى العنصر
+// - level_mode = 'center': level_cm = مركز العنصر دائمًا
+function itemBottom(it, s){
+  const mode = it.measure_mode || s.measure_mode || 'outside';
+  const lvlMode = s.level_mode || 'bottom';
+  if(lvlMode === 'bottom'){
+    return mode === 'inside' ? it.level_cm - it.height_cm : it.level_cm;
+  }
+  return it.level_cm - it.height_cm / 2;
+}
+
+function itemBox(it){const s=SPECS[it.type],x=itemOffset(it,s),bottom=itemBottom(it,s);return{x1:x,x2:x+it.width_cm,z1:bottom,z2:bottom+it.height_cm};}
 function boxesOverlap(a,b){return a.x1<b.x2-.001&&a.x2>b.x1+.001&&a.z1<b.z2-.001&&a.z2>b.z1+.001;}
 function findOverlap(item,ignoreIndex){const box=itemBox(item);for(let i=0;i<items.length;i++){if(i===ignoreIndex)continue;if(boxesOverlap(box,itemBox(items[i])))return items[i];}return null;}
 function showNotice(message){$('noticeText').textContent=message;$('noticeOverlay').classList.add('show');}
@@ -5465,7 +5523,7 @@ function saveItem(){
   if(item.measure_cm<0||item.width_cm<=0||item.height_cm<=0){alert(TX.check_sizes);return;}
   if(offset<0||offset+item.width_cm>WALL_LEN){alert(TX.outside_wall);return;}
   if(s.custom_depth&&item.depth_cm<=0){alert(TX.check_depth);return;}
-  const bottom=s.level_mode==='bottom'?item.level_cm:(s.kind!=='opening'?item.level_cm-item.height_cm/2:(currentType==='door'?0:item.level_cm)), top=bottom+item.height_cm;
+  const bottom=itemBottom(item,s), top=bottom+item.height_cm;
   if(bottom<0||top>WALL_H){alert(TX.outside_height);return;}
   const overlap=findOverlap(item,editIndex);
   if(overlap){showNotice(TX.overlap_add.replace('%{item}',item.name).replace('%{other}',overlap.name));return;}
@@ -5489,7 +5547,7 @@ function renderList(){if(!items.length){$('list').innerHTML=`<div class="hint">$
 // نفس اتجاه الرسم المرئي المستخدم في نافذة الباب والشباك الأصلية.
 function xOffset(it){const s=SPECS[it.type];const mm=it.measure_mode||s.measure_mode||'outside';if(mm==='inside')return it.side==='شمال'?it.measure_cm:WALL_LEN-it.measure_cm;return it.side==='شمال'?it.measure_cm:WALL_LEN-it.measure_cm-it.width_cm;}
 function draw(){const sx=610/Math.max(WALL_LEN,1),sy=330/Math.max(WALL_H,1),wx=45,wy=35,wh=330;let out=`<rect class="wall" x="${wx}" y="${wy}" width="610" height="330"/><text class="dim" x="350" y="395" text-anchor="middle">${esc(TX.wall_length)}: ${WALL_LEN} ${esc(TX.cm)}</text><text class="dim" x="12" y="200" transform="rotate(-90 12 200)" text-anchor="middle">${esc(TX.wall_height)}: ${WALL_H} ${esc(TX.cm)}</text>`;
- items.forEach((it,i)=>{const spec=SPECS[it.type],x=wx+xOffset(it)*sx,w=Math.max(10,it.width_cm*sx),h=Math.max(10,it.height_cm*sy),base=spec.level_mode==='bottom'?it.level_cm:(spec.kind!=='opening'?it.level_cm-it.height_cm/2:(it.type==='door'?0:it.level_cm)),y=wy+wh-(base+it.height_cm)*sy,cls=(spec.kind==='opening'?'open':'symbol')+(i===editIndex?' selected':'');
+ items.forEach((it,i)=>{const spec=SPECS[it.type],x=wx+xOffset(it)*sx,w=Math.max(10,it.width_cm*sx),h=Math.max(10,it.height_cm*sy),bottom=itemBottom(it,spec),y=wy+wh-(bottom+it.height_cm)*sy,cls=(spec.kind==='opening'?'open':'symbol')+(i===editIndex?' selected':'');
  if(SPECS[it.type].kind==='opening')out+=`<rect class="${cls}" x="${x}" y="${y}" width="${w}" height="${h}"/>`;
  else if(it.type==='feed_box'){const vr=Math.max(4,Math.min(w,h)*.08),dr=Math.max(4,Math.min(w,h)*.07);out+=`<rect class="${cls}" x="${x}" y="${y}" width="${w}" height="${h}"/><circle class="symbol" cx="${x+w/3}" cy="${y+h*.32}" r="${vr}"/><circle class="symbol" cx="${x+w*2/3}" cy="${y+h*.32}" r="${vr}"/><circle class="open" cx="${x+w/2}" cy="${y+h*.70}" r="${dr}"/>`;}
  else out+=`<circle class="${cls}" cx="${x+w/2}" cy="${y+h/2}" r="${Math.max(6,Math.min(w,h)/2)}"/>`;
