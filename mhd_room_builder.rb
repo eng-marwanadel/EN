@@ -1529,7 +1529,11 @@ def create_wall_draw_session(data)
   model = Sketchup.active_model
   return nil unless model && model.valid?
   data = normalize_wall_draw_data(data)
-  group = model.active_entities.add_group
+  group = begin
+    model.entities.add_group
+  rescue
+    model.active_entities.add_group
+  end
   room_name = data['room_name'].to_s.strip
   room_uuid = uuid.to_s
   group_name = "#{room_name} | #{ts('رسم حوائط').to_s}"
@@ -1571,18 +1575,29 @@ def wall_draw_add_segment(group, p1, p2, height_cm, thickness_cm, number)
   q2 = p2.offset(perp, half)
   q3 = p2.offset(perp.reverse, half)
   q4 = p1.offset(perp.reverse, half)
-  stamp = Time.now.to_f
-  defn = model.definitions.add("MHD_DRAW_WALL_#{stamp}_#{rand(1_000_000)}".to_s)
-  add_prism(defn.entities, q1, q2, q3, q4, 0, height_cm.to_f.cm)
-  inst = group.entities.add_instance(defn, Geom::Transformation.new)
+
+  # IMPORTANT: build a plain Group directly inside the session group.
+  # Avoid add_instance/ComponentDefinition here because SketchUp can invalidate
+  # a nested Group during interactive Tool operations in some edit contexts.
+  wall_group = group.entities.add_group
   name = format('%s %02d', ts('حائط').to_s, number.to_i)
-  inst.name = name
-  room_name = group.get_attribute(DICT, 'اسم الغرفة').to_s
-  room_name = ts('غرفة جديدة').to_s if room_name.strip.empty?
-  layer_name = [room_name, name.to_s].reject { |v| v.to_s.strip.empty? }.join(' | ')
-  layer_obj = tag(model, layer_name.to_s)
-  inst.layer = layer_obj if layer_obj
-  set_attrs(inst, {
+  wall_group.name = name.to_s
+
+  face = wall_group.entities.add_face(q1, q2, q3, q4)
+  raise 'تعذر إنشاء سطح الحائط.' unless face && face.valid?
+  face.reverse! if face.normal.z < 0
+  face.pushpull(height_cm.to_f.cm)
+
+  room_name = group.get_attribute(DICT, 'اسم الغرفة').to_s.strip
+  room_name = ts('غرفة جديدة').to_s if room_name.empty?
+  begin
+    layer_name = [room_name, name.to_s].join(' | ')
+    layer_obj = tag(model, layer_name)
+    wall_group.layer = layer_obj if layer_obj && wall_group.valid?
+  rescue
+  end
+
+  set_attrs(wall_group, {
     'UUID' => uuid.to_s,
     'Room_UUID' => group.get_attribute(DICT, 'UUID').to_s,
     'النوع' => 'حائط',
@@ -1596,10 +1611,9 @@ def wall_draw_add_segment(group, p1, p2, height_cm, thickness_cm, number)
     'P2' => pt_to_s(p2),
     'رسم_تفاعلي' => 'نعم'
   })
-  inst
+  wall_group
 rescue => e
-  UI.messagebox("خطأ في إنشاء الحائط رقم #{number}:\n#{e.class}: #{e.message}") rescue nil
-  nil
+  raise e
 end
 
 def wall_draw_temporary_cleanup(group)
@@ -1646,39 +1660,107 @@ class WallDrawTool
   def draw(view)
     return unless @active
     begin
-      view.line_width = 3
+      # ===== Premium live laser presentation =====
+      # Draw all committed segments as strong construction lines.
+      if @points.length >= 2
+        @points.each_cons(2).with_index do |(a, b), idx|
+          view.line_width = 4
+          view.drawing_color = Sketchup::Color.new(0, 210, 255)
+          view.draw(GL_LINES, [a, b])
+
+          # Wall-thickness preview edges (2D footprint) + centerline.
+          dir = a.vector_to(b)
+          if dir.length > 0.1.mm
+            dir.normalize!
+            perp = Geom::Vector3d.new(-dir.y, dir.x, 0)
+            perp.normalize!
+            half = (@data['wall_t'].to_f.cm / 2.0)
+            a1 = a.offset(perp, half)
+            a2 = a.offset(perp.reverse, half)
+            b1 = b.offset(perp, half)
+            b2 = b.offset(perp.reverse, half)
+            view.line_width = 2
+            view.drawing_color = Sketchup::Color.new(0, 150, 255)
+            view.draw(GL_LINE_LOOP, [a1, b1, b2, a2])
+          end
+        end
+      end
+
       if @points.length >= 1 && (@preview_point || @last_cursor_point)
         p1 = @points[-1]
         p2 = @preview_point || @last_cursor_point
-        view.drawing_color = Sketchup::Color.new(255, 45, 45)
-        view.draw(GL_LINES, [p1, p2])
-
         dir = p1.vector_to(p2)
         if dir.length > 0.1.mm
           dir.normalize!
           perp = Geom::Vector3d.new(-dir.y, dir.x, 0)
           perp.normalize!
-          mid = Geom::Point3d.new((p1.x + p2.x) / 2.0, (p1.y + p2.y) / 2.0, 0)
-          tick = 8.cm
+          half = (@data['wall_t'].to_f.cm / 2.0)
+          a1 = p1.offset(perp, half)
+          a2 = p1.offset(perp.reverse, half)
+          b1 = p2.offset(perp, half)
+          b2 = p2.offset(perp.reverse, half)
+
+          # Main laser centerline.
+          view.line_width = 5
+          view.drawing_color = Sketchup::Color.new(255, 40, 70)
+          view.draw(GL_LINES, [p1, p2])
+
+          # Preview wall footprint.
+          view.line_width = 3
+          view.drawing_color = Sketchup::Color.new(255, 175, 0)
+          view.draw(GL_LINE_LOOP, [a1, b1, b2, a2])
+
+          # Vertical wall preview sides: gives the user a 3D wall feel.
+          h = @data['wall_h'].to_f.cm
+          z1 = a1.offset(Z_AXIS, h)
+          z2 = b1.offset(Z_AXIS, h)
+          z3 = b2.offset(Z_AXIS, h)
+          z4 = a2.offset(Z_AXIS, h)
+          view.line_width = 2
+          view.drawing_color = Sketchup::Color.new(255, 110, 40)
+          view.draw(GL_LINES, [a1, z1, b1, z2, b2, z3, a2, z4, z1, z2, z2, z3, z3, z4, z4, z1])
+
+          # Dimension witness line offset from wall.
+          offset = [@data['wall_t'].to_f.cm, 25.cm].max
+          dim_a = p1.offset(perp, offset)
+          dim_b = p2.offset(perp, offset)
           view.line_width = 2
           view.drawing_color = Sketchup::Color.new(255, 215, 0)
-          view.draw(GL_LINES, [mid.offset(perp, tick / 2.0), mid.offset(perp.reverse, tick / 2.0)])
+          view.draw(GL_LINES, [dim_a, dim_b])
+          tick = 6.cm
+          view.draw(GL_LINES, [dim_a.offset(perp.reverse, tick), dim_a.offset(perp, tick), dim_b.offset(perp.reverse, tick), dim_b.offset(perp, tick)])
+
+          mid = Geom::Point3d.new((p1.x + p2.x) / 2.0, (p1.y + p2.y) / 2.0, 0)
           len_cm = p1.distance(p2).to_cm
           angle = segment_angle_deg(p1, p2)
-          label = "#{MHD_RoomBuilder_Context.ts('حائط').to_s} #{format('%02d', @wall_number)}\n#{MHD_RoomBuilder_Context.ts('الطول').to_s}: #{len_cm.round(1)} سم\n#{MHD_RoomBuilder_Context.ts('الزاوية').to_s}: #{angle.round(1)}°"
-          label += "\n↯ #{@snap_name}" if @snap_name
-          view.draw_text(mid.offset(Z_AXIS, 8.cm), label.to_s)
+          text = []
+          text << "حائط #{format('%02d', @wall_number)}"
+          text << "الطول: #{len_cm.round(1)} سم"
+          text << "الزاوية: #{angle.round(1)}°"
+          text << "سمك: #{@data['wall_t'].to_f.round(1)} سم"
+          text << "ارتفاع: #{@data['wall_h'].to_f.round(1)} سم"
+          text << "↯ #{@snap_name}" if @snap_name
+          view.draw_text(dim_a.offset(Z_AXIS, 10.cm), text.join("\n"))
         end
-      elsif @points.empty? && @last_cursor_point
-        view.draw_points([@last_cursor_point], 10, 1, Sketchup::Color.new(0, 190, 255))
       end
 
-      if @points.length >= 1
-        view.drawing_color = Sketchup::Color.new(0, 190, 255)
-        view.draw_points([@points.first], 10, 1, Sketchup::Color.new(0, 190, 255))
-        view.draw_points([@points[-1]], 9, 1, Sketchup::Color.new(255, 170, 0))
+      # Strong point markers.
+      if @points.any?
+        view.draw_points([@points.first], 12, 1, Sketchup::Color.new(0, 220, 255))
+        view.draw_points([@points[-1]], 11, 1, Sketchup::Color.new(255, 180, 0))
+      elsif @last_cursor_point
+        view.draw_points([@last_cursor_point], 12, 1, Sketchup::Color.new(0, 220, 255))
+      end
+
+      # Close hint when near the starting point.
+      if @points.length >= 3 && @last_cursor_point && @last_cursor_point.distance(@points.first) <= 25.cm
+        view.drawing_color = Sketchup::Color.new(0, 255, 120)
+        view.line_width = 5
+        view.draw(GL_LINES, [@points[-1], @points.first])
+        view.draw_text(@points.first.offset(Z_AXIS, 18.cm), '⬤ اضغط هنا لإغلاق الغرفة')
       end
     rescue
+      # Keep the preview tool alive even if SketchUp rejects a transient draw call.
     end
   end
 
@@ -1848,22 +1930,18 @@ class WallDrawTool
 
   def commit_segment(target, view)
     return if @points.empty? || !target
-    ensure_session!
-    start = @points[-1]
     target = Geom::Point3d.new(target.x, target.y, 0)
-    if target.distance(start) <= 0.5.cm
-      return
-    end
-    inst = MHD_RoomBuilder_Context.wall_draw_add_segment(
-      @group, start, target, @data['wall_h'].to_f, @data['wall_t'].to_f, @wall_number
-    )
-    raise 'فشل إنشاء Geometry الحائط.' unless inst && inst.valid?
+    start = @points[-1]
+    return if target.distance(start) <= 0.5.cm
+
+    # IMPORTANT: During interactive drawing we store only parametric points.
+    # Permanent geometry is created once, from the complete polygon, when the room is closed.
     @points << target
     @wall_number += 1
     @typed_length_cm = nil
     @preview_point = target
     save_points
-    update_status
+    set_status("✅ حائط #{@wall_number - 1} تم تثبيته | حرّك الماوس لرسم الحائط التالي")
     view.invalidate if view
   end
 
@@ -1882,7 +1960,7 @@ class WallDrawTool
       commit_segment(target, view)
       @points[-1] = first if @points.length > 1 && @points[-1].distance(first) <= 0.5.cm
     end
-    if MHD_RoomBuilder_Context.finalize_wall_draw_session(self)
+    if MHD_RoomBuilder_Context.wall_draw_finalize_tool(self)
       @active = false
       Sketchup.active_model.select_tool(nil)
     end
@@ -1921,6 +1999,32 @@ class WallDrawTool
     Sketchup.active_model.select_tool(nil)
     set_status('')
   end
+end
+
+
+def wall_draw_finalize_tool(tool)
+  return false unless tool
+  group = tool.instance_variable_get(:@group)
+  pts = tool.instance_variable_get(:@points)
+  data = tool.instance_variable_get(:@data)
+  return false unless group && group.valid? && pts.is_a?(Array) && pts.length >= 3
+
+  model = Sketchup.active_model
+  room_data = normalize_wall_draw_data(data)
+  # Store the points and required room metadata before synchronization.
+  group.set_attribute(DICT, 'wall_draw_points', pts.map { |p| pt_to_s(p) }.to_json)
+  group.set_attribute(DICT, 'النوع', 'غرفة')
+  group.set_attribute(DICT, 'اسم الغرفة', room_data['room_name'].to_s)
+  group.set_attribute(DICT, 'UUID', group.get_attribute(DICT, 'UUID').to_s.empty? ? uuid.to_s : group.get_attribute(DICT, 'UUID').to_s)
+
+  # The laser stores points only; permanent geometry is built once from the final polygon.
+  group.set_attribute(DICT, 'النوع', 'غرفة')
+  synchronize_room_geometry(group, pts, room_data)
+  model.active_view.invalidate if model && model.valid?
+  true
+rescue => e
+  UI.messagebox("خطأ عند اعتماد الغرفة من الليزر:\n#{e.class}: #{e.message}") rescue nil
+  false
 end
 
 def activate_wall_draw_tool_direct
@@ -3519,7 +3623,11 @@ outward_pts << inter
 end
 stamp = Time.now.to_i
 room_uuid = uuid
-room_group = model.active_entities.add_group
+room_group = begin
+    model.entities.add_group
+  rescue
+    model.active_entities.add_group
+  end
 room_group.name = room_name
 room_group.layer = tag(model, room_name)
 
