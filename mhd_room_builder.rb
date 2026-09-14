@@ -1616,13 +1616,13 @@ def create_wall_draw_session(data)
   end
   room_name = data['room_name'].to_s.strip
   room_uuid = uuid.to_s
-  group_name = "#{room_name} | #{ts('رسم حوائط').to_s}"
+  group_name = "#{room_name} | #{ts('رسم حوائط مباشر').to_s}"
   group.name = group_name
   room_tag = tag(model, room_name.to_s)
   group.layer = room_tag if room_tag
   set_attrs(group, {
     'UUID' => room_uuid,
-    'النوع' => 'رسم حوائط',
+    'النوع' => 'رسم حوائط مباشر',
     'اسم الغرفة' => room_name,
     'ارتفاع الحائط سم' => data['wall_h'].to_f,
     'سمك الحائط سم' => data['wall_t'].to_f,
@@ -1725,7 +1725,7 @@ class WallDrawTool
   def activate
     @active = true
     @group = nil
-    set_status('🧱 اضغط كليك لتحديد نقطة البداية. حرّك الماوس لرؤية الليزر والمقاس.')
+    set_status('🧱 اضغط كليك لتحديد نقطة البداية ثم ارسم الحوائط مباشرة. الحائط يُنشأ فعليًا عند كل كليك.')
     Sketchup.active_model.active_view.invalidate
   rescue => e
     @active = false
@@ -1744,32 +1744,8 @@ class WallDrawTool
   def draw(view)
     return unless @active
     begin
-      # ===== Premium live laser presentation =====
-      # Draw all committed segments as strong construction lines.
-      if @points.length >= 2
-        @points.each_cons(2).with_index do |(a, b), idx|
-          view.line_width = 4
-          view.drawing_color = Sketchup::Color.new(0, 210, 255)
-          view.draw(GL_LINES, [a, b])
-
-          # Wall-thickness preview edges (2D footprint) + centerline.
-          dir = a.vector_to(b)
-          if dir.length > 0.1.mm
-            dir.normalize!
-            perp = Geom::Vector3d.new(-dir.y, dir.x, 0)
-            perp.normalize!
-            half = (@data['wall_t'].to_f.cm / 2.0)
-            a1 = a.offset(perp, half)
-            a2 = a.offset(perp.reverse, half)
-            b1 = b.offset(perp, half)
-            b2 = b.offset(perp.reverse, half)
-            view.line_width = 2
-            view.drawing_color = Sketchup::Color.new(0, 150, 255)
-            view.draw(GL_LINE_LOOP, [a1, b1, b2, a2])
-          end
-        end
-      end
-
+      # Direct wall drawing preview — no laser.
+      # Committed walls are real SketchUp groups; preview is only the next wall footprint.
       if @points.length >= 1 && (@preview_point || @last_cursor_point)
         p1 = @points[-1]
         p2 = @preview_point || @last_cursor_point
@@ -1784,27 +1760,22 @@ class WallDrawTool
           b1 = p2.offset(perp, half)
           b2 = p2.offset(perp.reverse, half)
 
-          # Main laser centerline.
-          view.line_width = 5
-          view.drawing_color = Sketchup::Color.new(255, 40, 70)
-          view.draw(GL_LINES, [p1, p2])
-
-          # Preview wall footprint.
+          # Clean wall-footprint preview instead of a laser.
           view.line_width = 3
-          view.drawing_color = Sketchup::Color.new(255, 175, 0)
+          view.drawing_color = Sketchup::Color.new(255, 145, 0)
           view.draw(GL_LINE_LOOP, [a1, b1, b2, a2])
 
-          # Vertical wall preview sides: gives the user a 3D wall feel.
+          # Vertical corners preview for a clear 3D construction feel.
           h = @data['wall_h'].to_f.cm
           z1 = a1.offset(Z_AXIS, h)
           z2 = b1.offset(Z_AXIS, h)
           z3 = b2.offset(Z_AXIS, h)
           z4 = a2.offset(Z_AXIS, h)
           view.line_width = 2
-          view.drawing_color = Sketchup::Color.new(255, 110, 40)
+          view.drawing_color = Sketchup::Color.new(255, 180, 60)
           view.draw(GL_LINES, [a1, z1, b1, z2, b2, z3, a2, z4, z1, z2, z2, z3, z3, z4, z4, z1])
 
-          # Dimension witness line offset from wall.
+          # Dynamic dimension text only.
           offset = [@data['wall_t'].to_f.cm, 25.cm].max
           dim_a = p1.offset(perp, offset)
           dim_b = p2.offset(perp, offset)
@@ -1814,7 +1785,6 @@ class WallDrawTool
           tick = 6.cm
           view.draw(GL_LINES, [dim_a.offset(perp.reverse, tick), dim_a.offset(perp, tick), dim_b.offset(perp.reverse, tick), dim_b.offset(perp, tick)])
 
-          mid = Geom::Point3d.new((p1.x + p2.x) / 2.0, (p1.y + p2.y) / 2.0, 0)
           len_cm = p1.distance(p2).to_cm
           angle = segment_angle_deg(p1, p2)
           text = []
@@ -1828,7 +1798,7 @@ class WallDrawTool
         end
       end
 
-      # Strong point markers.
+      # Clear point markers. Green = exact snap, cyan = alignment.
       if @points.any?
         view.draw_points([@points.first], 12, 1, Sketchup::Color.new(0, 220, 255))
         view.draw_points([@points[-1]], 11, 1, Sketchup::Color.new(255, 180, 0))
@@ -1836,24 +1806,20 @@ class WallDrawTool
         view.draw_points([@last_cursor_point], 12, 1, Sketchup::Color.new(0, 220, 255))
       end
 
-      # Smart snap target marker: green = exact connection, cyan/yellow = alignment.
       if @snap_target
         marker_color = (@snap_type.to_s == 'نقطة اتصال' || @snap_type.to_s == 'نقطة حائط') ? Sketchup::Color.new(0, 255, 90) : Sketchup::Color.new(0, 220, 255)
         view.draw_points([@snap_target], 16, 2, marker_color)
-        if @snap_type
-          view.draw_text(@snap_target.offset(Z_AXIS, 12.cm), "🧲 #{@snap_type}") rescue nil
-        end
+        view.draw_text(@snap_target.offset(Z_AXIS, 12.cm), "🧲 #{@snap_type}") if @snap_type
       end
 
-      # Close hint when near the starting point.
       if @points.length >= 3 && @last_cursor_point && @last_cursor_point.distance(@points.first) <= 25.cm
         view.drawing_color = Sketchup::Color.new(0, 255, 120)
-        view.line_width = 5
+        view.line_width = 4
         view.draw(GL_LINES, [@points[-1], @points.first])
         view.draw_text(@points.first.offset(Z_AXIS, 18.cm), '⬤ اضغط هنا لإغلاق الغرفة')
       end
     rescue
-      # Keep the preview tool alive even if SketchUp rejects a transient draw call.
+      # Keep the direct drawing tool alive if a transient preview call fails.
     end
   end
 
@@ -2220,7 +2186,7 @@ def activate_wall_draw_tool_direct
     model.select_tool(tool)
     UI.start_timer(0.10, false) do
       begin
-        Sketchup.status_text = '🧱 MHD | الليزر جاهز: اضغط كليك لنقطة البداية ثم حرّك الماوس.'
+        Sketchup.status_text = '🧱 MHD | رسم الحوائط المباشر جاهز: اضغط كليك لنقطة البداية ثم ابدأ الرسم.'
         model.active_view.invalidate
       rescue
       end
@@ -2232,7 +2198,7 @@ def activate_wall_draw_tool_direct
   end
 end
 
-# تشغيل الإعدادات اختياريًا ثم بدء الأداة
+# مسار قديم للإعدادات محفوظ للتوافق الداخلي؛ الواجهة تستخدم الرسم المباشر فقط.
 def activate_wall_draw_tool
   model = Sketchup.active_model
   return false unless model && model.valid?
@@ -2244,7 +2210,7 @@ def activate_wall_draw_tool
     model.select_tool(tool)
     UI.start_timer(0.10, false) do
       begin
-        Sketchup.status_text = '🧱 MHD | الليزر جاهز: اضغط كليك لنقطة البداية ثم حرّك الماوس.'
+        Sketchup.status_text = '🧱 MHD | رسم الحوائط المباشر جاهز: اضغط كليك لنقطة البداية ثم ابدأ الرسم.'
         model.active_view.invalidate
       rescue
       end
@@ -3915,7 +3881,7 @@ selection = model.selection.to_a
   end
 
   menu.add_separator
-  menu.add_item(ts('🧱 رسم حوائط ديناميكي')) { activate_wall_draw_tool }
+  menu.add_item(ts('🧱 بدء رسم الحوائط مباشرة')) { activate_wall_draw_tool_direct }
 
   # تعديل غرفة موجودة
   room_group = nil
@@ -3949,10 +3915,6 @@ selection = model.selection.to_a
 end
 
 # قائمة Plugins للأداة التفاعلية
-UI.menu('Plugins').add_item(ts('MHD - رسم حوائط ديناميكي (ليزر + أبعاد)')) do
-  activate_wall_draw_tool_direct
-end
-
 UI.menu('Plugins').add_item(ts('MHD - بدء رسم الحوائط مباشرة')) do
   activate_wall_draw_tool_direct
 end
