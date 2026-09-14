@@ -453,7 +453,7 @@ nil
 end
 
 def save_build_data(room_group, data)
-save_beams(room_group, [])
+# لا تمسح بيانات الكمرات عند حفظ بيانات الغرفة؛ الكمرات مرتبطة ديناميكياً بالغرفة.
 room_group.set_attribute(DICT, 'build_data_json', data.to_json)
 end
 
@@ -765,6 +765,7 @@ end
 rebuild_room_walls(room_group, pts, outward,
 wall_h_cm.cm, wall_t_cm.cm,
 wall_h_cm, wall_t_cm, name, room_uuid)
+rebuild_all_beams(room_group) if respond_to?(:rebuild_all_beams)
 room_group.name = name
 room_group.layer = tag(model, name)
 save_build_data(room_group, new_data)
@@ -890,6 +891,299 @@ return nested if nested
 end
 nil
 end
+
+# =========================================================
+# MHD WALL ENGINE V1 - Parametric Dynamic Wall Edit
+# =========================================================
+def wall_points_from_room(room_group)
+  room_pts_from_group(room_group)
+end
+
+def wall_record(room_group, wall_number)
+  wall = find_wall_in_room(room_group, wall_number)
+  return nil unless wall && wall.valid?
+  p1s = wall.get_attribute(DICT, 'P1').to_s
+  p2s = wall.get_attribute(DICT, 'P2').to_s
+  p1 = p1s.split('|').map(&:to_f)
+  p2 = p2s.split('|').map(&:to_f)
+  return nil unless p1.length >= 3 && p2.length >= 3
+  {
+    'wall' => wall,
+    'number' => wall.get_attribute(DICT, 'رقم الحائط').to_i,
+    'name' => wall.get_attribute(DICT, 'الاسم').to_s,
+    'length_cm' => wall.get_attribute(DICT, 'طول الحائط سم').to_f,
+    'height_cm' => wall.get_attribute(DICT, 'الارتفاع سم').to_f,
+    'thickness_cm' => wall.get_attribute(DICT, 'السمك سم').to_f,
+    'p1' => Geom::Point3d.new(p1[0], p1[1], p1[2]),
+    'p2' => Geom::Point3d.new(p2[0], p2[1], p2[2])
+  }
+rescue
+  nil
+end
+
+def polygon_valid_for_wall_edit?(pts)
+  return false unless pts.is_a?(Array) && pts.length >= 3
+  signed_area_xy(pts).abs > 1.0
+rescue
+  false
+end
+
+def build_wall_edit_points(room_group, wall_number, new_length_cm, anchor)
+  pts = wall_points_from_room(room_group)
+  return nil unless pts && pts.length >= 3
+  idx = wall_number.to_i - 1
+  return nil if idx < 0 || idx >= pts.length
+  j = (idx + 1) % pts.length
+  p1 = pts[idx]
+  p2 = pts[j]
+  vec = p1.vector_to(p2)
+  return nil if vec.length <= 0.1.mm
+  dir = vec.clone
+  dir.normalize!
+  target = new_length_cm.to_f.cm
+  return nil if target <= 0.1.cm
+
+  case anchor.to_s
+  when 'end'
+    pts[idx] = p2.offset(dir.reverse, target)
+  when 'center'
+    center = Geom::Point3d.new((p1.x + p2.x) / 2.0, (p1.y + p2.y) / 2.0, (p1.z + p2.z) / 2.0)
+    half = target / 2.0
+    pts[idx] = center.offset(dir.reverse, half)
+    pts[j]   = center.offset(dir, half)
+  else
+    pts[j] = p1.offset(dir, target)
+  end
+  pts
+rescue
+  nil
+end
+
+def rebuild_room_after_wall_edit(room_group, pts, room_data)
+  model = Sketchup.active_model
+  room_uuid = room_group.get_attribute(DICT, 'UUID').to_s
+  room_uuid = uuid if room_uuid.empty?
+  name = room_data['room_name'].to_s.strip
+  name = ts('الغرفة') if name.empty?
+  wall_h_cm = room_data['wall_h'].to_f
+  wall_t_cm = room_data['wall_t'].to_f
+  floor_t_cm = room_data['floor_t'].to_f
+  ceil_t_cm = room_data['ceil_t'].to_f
+  floor_on = enabled_value?(room_data['create_floor'])
+  ceiling_on = enabled_value?(room_data['create_ceiling'])
+
+  outward = compute_outward_pts(pts, wall_t_cm.cm)
+  rebuild_room_walls(room_group, pts, outward, wall_h_cm.cm, wall_t_cm.cm,
+                     wall_h_cm, wall_t_cm, name, room_uuid)
+
+  delete_room_parts(room_group, 'أرضية')
+  rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid) if floor_on && floor_t_cm > 0
+
+  delete_room_parts(room_group, 'سقف')
+  if ceiling_on && ceil_t_cm > 0
+    build_ceiling(model, room_group, name, room_uuid, outward, pts,
+                  wall_h_cm.cm, ceil_t_cm.cm, ceil_t_cm, room_data)
+  end
+
+  save_room_pts(room_group, pts)
+  save_build_data(room_group, room_data)
+  room_group.set_attribute(DICT, 'اسم الغرفة', name)
+  room_group.set_attribute(DICT, 'ارتفاع الحائط سم', wall_h_cm)
+  room_group.set_attribute(DICT, 'سمك الحائط سم', wall_t_cm)
+  room_group.set_attribute(DICT, 'سمك الأرضية سم', floor_t_cm)
+  room_group.set_attribute(DICT, 'سمك السقف سم', ceil_t_cm)
+  room_group.set_attribute(DICT, 'إنشاء أرضية', floor_on ? 'نعم' : 'لا')
+  room_group.set_attribute(DICT, 'إنشاء سقف', ceiling_on ? 'نعم' : 'لا')
+  rebuild_all_beams(room_group) if respond_to?(:rebuild_all_beams)
+  model.active_view.invalidate
+  true
+end
+
+def apply_wall_edit(room_group, wall_number, data)
+  return false unless room_group && room_group.valid?
+  room_data = build_data_from_group(room_group)
+  unless room_data && !room_data.empty?
+    UI.messagebox(ts('لا توجد بيانات محفوظة للغرفة.'))
+    return false
+  end
+
+  rec = wall_record(room_group, wall_number)
+  unless rec
+    UI.messagebox(ts('تعذر قراءة الحائط المحدد.'))
+    return false
+  end
+
+  new_length = data['length_cm'].to_f
+  new_height = data['height_cm'].to_f
+  new_thickness = data['thickness_cm'].to_f
+  anchor = data['anchor'].to_s
+  new_name = data['name'].to_s.strip
+  new_name = rec['name'] if new_name.empty?
+
+  if new_length <= 1.0
+    UI.messagebox(ts('طول الحائط يجب أن يكون أكبر من 1 سم.'))
+    return false
+  end
+  if new_height <= 1.0 || new_thickness <= 0.1
+    UI.messagebox(ts('ارتفاع وسمك الحائط يجب أن يكونا أكبر من صفر.'))
+    return false
+  end
+
+  room_data = room_data.dup
+  room_data['wall_h'] = new_height
+  room_data['wall_t'] = new_thickness
+
+  new_pts = build_wall_edit_points(room_group, wall_number, new_length, anchor)
+  unless new_pts && polygon_valid_for_wall_edit?(new_pts)
+    UI.messagebox(ts('القيمة الجديدة أدت إلى شكل غرفة غير صالح. جرّب طولاً أكبر أو نقطة تثبيت مختلفة.'))
+    return false
+  end
+
+  model = Sketchup.active_model
+  model.start_operation('MHD Parametric Wall Edit', true)
+  begin
+    old_wall_name = rec['name']
+    rebuild_room_after_wall_edit(room_group, new_pts, room_data)
+
+    if new_name != old_wall_name
+      wall = find_wall_in_room(room_group, wall_number)
+      if wall && wall.valid?
+        wall.name = new_name
+        wall.set_attribute(DICT, 'الاسم', new_name)
+        room_name = room_data['room_name'].to_s
+        wall.layer = tag(model, "#{room_name} | #{new_name}")
+      end
+      rename_beam_tags_for_room(room_group) if respond_to?(:rename_beam_tags_for_room)
+    end
+
+    model.commit_operation
+    UI.messagebox("✅ #{ts('تم تعديل الحائط ديناميكياً')}\\n#{ts('الطول')}: #{new_length.round(2)} سم")
+    true
+  rescue => e
+    model.abort_operation rescue nil
+    UI.messagebox("❌ #{ts('خطأ أثناء تعديل الحائط')}:\\n#{e.message}")
+    false
+  end
+end
+
+def wall_edit_dialog_values(rec)
+  {
+    'length_cm' => rec['length_cm'].round(2),
+    'height_cm' => rec['height_cm'].round(2),
+    'thickness_cm' => rec['thickness_cm'].round(2),
+    'name' => rec['name'],
+    'anchor' => 'start'
+  }
+end
+
+def open_wall_dialog(target)
+  room_group = find_room_group(target)
+  unless room_group
+    UI.messagebox(ts('لم يتم العثور على غرفة MHD لهذا الحائط.'))
+    return
+  end
+  wall_number = target.get_attribute(DICT, 'رقم الحائط').to_i
+  rec = wall_record(room_group, wall_number)
+  unless rec
+    UI.messagebox(ts('تعذر قراءة الحائط المحدد.'))
+    return
+  end
+
+  v = wall_edit_dialog_values(rec)
+  dlg = UI::HtmlDialog.new(
+    dialog_title: "#{ts('تعديل الحائط')} - MHDESIGN",
+    preferences_key: PREF_KEY + '_WALL_EDIT',
+    scrollable: false,
+    resizable: true,
+    width: 390,
+    height: 610,
+    style: UI::HtmlDialog::STYLE_DIALOG
+  )
+
+  safe_name = v['name'].to_s.gsub('&','&amp;').gsub('"','&quot;').gsub('<','&lt;').gsub('>','&gt;')
+  html = <<-HTML
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<style>
+*{box-sizing:border-box}body{margin:0;background:#07131d;color:#eaf4f8;font-family:Arial,Tahoma,sans-serif;overflow:auto}
+.app{padding:14px}.title{font-size:21px;font-weight:900;text-align:center;margin-bottom:5px}.sub{text-align:center;color:#8eabbc;font-size:12px;margin-bottom:14px}
+.card{background:#0b1b27;border:1px solid #1c3342;border-radius:12px;padding:12px;margin-bottom:10px}.row{display:grid;grid-template-columns:135px 1fr;gap:8px;align-items:center;margin-bottom:9px}.row:last-child{margin-bottom:0}
+label{font-weight:900;font-size:13px}input,select{width:100%;height:34px;background:#111f2a;color:#fff;border:1px solid #294457;border-radius:7px;padding:4px 8px;text-align:center;font-size:14px}input:focus,select:focus{outline:2px solid #39a245}
+.length-wrap{display:grid;grid-template-columns:42px 1fr 42px;gap:5px;align-items:center}.step{height:34px;border:1px solid #294457;background:#0f2433;color:#fff;border-radius:7px;font-size:17px;font-weight:900;cursor:pointer}.range{width:100%;height:26px}.big{font-size:18px;font-weight:900;text-align:center;margin:4px 0 12px;color:#fff}.hint{font-size:11px;color:#8eabbc;line-height:1.55;margin-top:7px}.footer{display:flex;gap:8px;margin-top:12px}.btn{flex:1;height:42px;border:0;border-radius:9px;font-weight:900;font-size:14px;cursor:pointer}.save{background:#4de37a;color:#061923}.cancel{background:#0b1b27;color:#fff;border:1px solid #294457}
+</style>
+</head>
+<body>
+<div class="app">
+<div class="title">🧱 تعديل الحائط ##{wall_number}</div>
+<div class="sub">تعديل بارامتري للحائط مع تحديث الغرفة والعناصر المرتبطة</div>
+<div class="card">
+<div class="big"><span id="length_big">#{v['length_cm']}</span> سم</div>
+<div class="row"><label>طول الحائط سم</label><div class="length-wrap"><button class="step" onclick="step(-1)">−</button><input id="length" type="number" step="0.1" min="1" value="#{v['length_cm']}" oninput="syncRange()"><button class="step" onclick="step(1)">+</button></div></div>
+<input id="length_range" class="range" type="range" min="1" max="2000" step="1" value="#{v['length_cm']}" oninput="syncInput()">
+<div class="hint">تقدر تزود أو تقلل طول الحائط، وتحدد نقطة التثبيت: بداية الحائط أو نهايته أو المنتصف.</div>
+</div>
+<div class="card">
+<div class="row"><label>نقطة التثبيت</label><select id="anchor"><option value="start">تثبيت بداية الحائط</option><option value="end">تثبيت نهاية الحائط</option><option value="center">تثبيت المنتصف</option></select></div>
+<div class="row"><label>ارتفاع الحائط سم</label><input id="height" type="number" step="0.1" min="1" value="#{v['height_cm']}"></div>
+<div class="row"><label>سمك الحائط سم</label><input id="thickness" type="number" step="0.1" min="0.1" value="#{v['thickness_cm']}"></div>
+<div class="row"><label>اسم الحائط</label><input id="name" type="text" value="#{safe_name}"></div>
+</div>
+<div class="card"><b>⚡ تحديث ديناميكي</b><div class="hint">بعد الحفظ يتم إعادة حساب شكل الغرفة، الأرضية، السقف، والحوائط. الكمرات المرتبطة بالحائط يعاد بناؤها تلقائياً على الشكل الجديد.</div></div>
+<div class="footer"><button class="btn save" onclick="submitData()">💾 تطبيق التعديل</button><button class="btn cancel" onclick="sketchup.cancel()">إغلاق</button></div>
+</div>
+<script>
+function updateBig(){document.getElementById('length_big').textContent=document.getElementById('length').value||0;}
+function syncRange(){let n=parseFloat(document.getElementById('length').value||1);n=Math.max(1,Math.min(2000,n));document.getElementById('length_range').value=n;updateBig();}
+function syncInput(){document.getElementById('length').value=document.getElementById('length_range').value;updateBig();}
+function step(v){let n=parseFloat(document.getElementById('length').value||1);n=Math.max(1,n+v);document.getElementById('length').value=n;syncRange();}
+function submitData(){
+ let data={length_cm:parseFloat(document.getElementById('length').value),height_cm:parseFloat(document.getElementById('height').value),thickness_cm:parseFloat(document.getElementById('thickness').value),name:document.getElementById('name').value,anchor:document.getElementById('anchor').value};
+ if(!Number.isFinite(data.length_cm)||!Number.isFinite(data.height_cm)||!Number.isFinite(data.thickness_cm)){alert('راجع المقاسات');return;}
+ sketchup.submit(JSON.stringify(data));
+}
+updateBig();
+</script>
+</body></html>
+  HTML
+  dlg.set_html(html)
+  dlg.add_action_callback('cancel') { dlg.close }
+  dlg.add_action_callback('submit') do |_, json|
+    begin
+      data = JSON.parse(json)
+      dlg.close
+      apply_wall_edit(room_group, wall_number, data)
+    rescue => e
+      UI.messagebox("Error:\n#{e.message}")
+    end
+  end
+  dlg.show
+end
+
+class WallEditPickTool
+  def activate
+    Sketchup.status_text = ts('انقر على أي حائط لتعديل طوله وارتفاعه وسمكه')
+  end
+  def onLButtonDown(_flags, x, y, view)
+    ph = view.pick_helper
+    ph.do_pick(x, y)
+    ent = ph.best_picked
+    if ent && ent.respond_to?(:get_attribute) && ent.get_attribute(DICT, 'النوع').to_s == 'حائط'
+      open_wall_dialog(ent)
+    else
+      UI.messagebox(ts('اضغط على حائط من حوائط غرفة MHD.'))
+    end
+  end
+  def onCancel(_reason, _view)
+    Sketchup.active_model.select_tool(nil)
+  end
+end
+
+def activate_wall_edit_picker
+  Sketchup.active_model.select_tool(WallEditPickTool.new)
+end
+
 
 # =========================================================
 # MHD BEAM ENGINE V1 - Dynamic wall beams
@@ -2102,7 +2396,7 @@ selection = model.selection.to_a
 
   if room_group
     menu.add_separator
-    menu.add_item(ts('⚙️ تعديل الغرفة')) { open_edit_room_dialog(room_group) }
+    menu.add_item(ts('⚙️ تعديل المطبخ')) { open_edit_room_dialog(room_group) }
 
     # كمر: يظهر عند تحديد حائط أو كمر
     wall_entity = selection.find do |entity|
@@ -2115,6 +2409,7 @@ selection = model.selection.to_a
     end
 
     if wall_entity
+      menu.add_item(ts('✏️ تعديل الحائط ديناميكياً')) { open_wall_dialog(wall_entity) }
       menu.add_item(ts('➕ إضافة كمر للحائط')) { open_beam_dialog(wall_entity) }
     elsif beam_entity
       menu.add_item(ts('⚙️ تعديل الكمر')) { open_beam_dialog(beam_entity) }
@@ -2125,6 +2420,10 @@ end
 # قائمة Plugins للأداة التفاعلية
 UI.menu('Plugins').add_item(ts('MHD - تعديل غرفة (نقر تفاعلي)')) do
   activate_room_edit_picker
+end
+
+UI.menu('Plugins').add_item(ts('MHD - تعديل حائط ديناميكي (نقر تفاعلي)')) do
+  activate_wall_edit_picker
 end
 
 UI.menu('Plugins').add_separator
