@@ -73,6 +73,8 @@ def longitudinal_value?(value)
 end
 
 def tag(model, name)
+name = name.to_s
+name = 'MHD' if name.strip.empty?
 model.layers[name] || model.layers.add(name)
 end
 
@@ -1316,10 +1318,10 @@ def open_wall_dialog(target)
   dlg = UI::HtmlDialog.new(
     dialog_title: "#{ts('تعديل الحائط')} - MHDESIGN",
     preferences_key: PREF_KEY + '_WALL_EDIT',
-    scrollable: true,
+    scrollable: false,
     resizable: true,
-    width: 430,
-    height: 700,
+    width: 390,
+    height: 610,
     style: UI::HtmlDialog::STYLE_DIALOG
   )
 
@@ -1330,12 +1332,11 @@ def open_wall_dialog(target)
 <head>
 <meta charset="UTF-8">
 <style>
-*{box-sizing:border-box}html,body{margin:0;padding:0;background:#07131d;color:#eaf4f8;font-family:Arial,Tahoma,sans-serif;overflow:auto;min-height:100%;height:auto}
-body{min-height:100vh}
-.app{padding:14px 14px 28px}.title{font-size:21px;font-weight:900;text-align:center;margin-bottom:5px}.sub{text-align:center;color:#8eabbc;font-size:12px;margin-bottom:14px}
+*{box-sizing:border-box}body{margin:0;background:#07131d;color:#eaf4f8;font-family:Arial,Tahoma,sans-serif;overflow:auto}
+.app{padding:14px}.title{font-size:21px;font-weight:900;text-align:center;margin-bottom:5px}.sub{text-align:center;color:#8eabbc;font-size:12px;margin-bottom:14px}
 .card{background:#0b1b27;border:1px solid #1c3342;border-radius:12px;padding:12px;margin-bottom:10px}.row{display:grid;grid-template-columns:135px 1fr;gap:8px;align-items:center;margin-bottom:9px}.row:last-child{margin-bottom:0}
 label{font-weight:900;font-size:13px}input,select{width:100%;height:34px;background:#111f2a;color:#fff;border:1px solid #294457;border-radius:7px;padding:4px 8px;text-align:center;font-size:14px}input:focus,select:focus{outline:2px solid #39a245}
-.length-wrap{display:grid;grid-template-columns:42px 1fr 42px;gap:5px;align-items:center}.step{height:34px;border:1px solid #294457;background:#0f2433;color:#fff;border-radius:7px;font-size:17px;font-weight:900;cursor:pointer}.range{width:100%;height:26px}.big{font-size:18px;font-weight:900;text-align:center;margin:4px 0 12px;color:#fff}.hint{font-size:11px;color:#8eabbc;line-height:1.55;margin-top:7px}.footer{display:flex;gap:8px;margin-top:12px;padding-bottom:8px;position:sticky;bottom:0;background:linear-gradient(180deg,rgba(7,19,29,0),#07131d 28%);padding-top:12px}.btn{flex:1;height:42px;border:0;border-radius:9px;font-weight:900;font-size:14px;cursor:pointer}.save{background:#4de37a;color:#061923}.cancel{background:#0b1b27;color:#fff;border:1px solid #294457}
+.length-wrap{display:grid;grid-template-columns:42px 1fr 42px;gap:5px;align-items:center}.step{height:34px;border:1px solid #294457;background:#0f2433;color:#fff;border-radius:7px;font-size:17px;font-weight:900;cursor:pointer}.range{width:100%;height:26px}.big{font-size:18px;font-weight:900;text-align:center;margin:4px 0 12px;color:#fff}.hint{font-size:11px;color:#8eabbc;line-height:1.55;margin-top:7px}.footer{display:flex;gap:8px;margin-top:12px}.btn{flex:1;height:42px;border:0;border-radius:9px;font-weight:900;font-size:14px;cursor:pointer}.save{background:#4de37a;color:#061923}.cancel{background:#0b1b27;color:#fff;border:1px solid #294457}
 </style>
 </head>
 <body>
@@ -1464,10 +1465,13 @@ end
 def create_wall_draw_session(data)
   model = Sketchup.active_model
   group = model.active_entities.add_group
-  room_name = data['room_name'].to_s
-  room_uuid = uuid
-  group.name = "#{room_name} | #{ts('رسم حوائط')}"
-  group.layer = tag(model, room_name)
+  room_name = data.is_a?(Hash) ? data['room_name'].to_s.strip : ''
+  room_name = ts('غرفة جديدة') if room_name.empty?
+  room_uuid = uuid.to_s
+  group_name = "#{room_name} | #{ts('رسم حوائط').to_s}"
+  group.name = group_name
+  room_tag = tag(model, room_name)
+  group.layer = room_tag if room_tag
   set_attrs(group, {
     'UUID' => room_uuid,
     'النوع' => 'رسم حوائط',
@@ -1506,7 +1510,10 @@ def wall_draw_add_segment(group, p1, p2, height_cm, thickness_cm, number)
   inst = group.entities.add_instance(defn, Geom::Transformation.new)
   name = format('%s %02d', ts('حائط'), number.to_i)
   inst.name = name
-  inst.layer = tag(model, "#{group.get_attribute(DICT, 'اسم الغرفة')} | #{name}")
+  room_name = group.get_attribute(DICT, 'اسم الغرفة').to_s
+  layer_name = [room_name, name.to_s].reject(&:empty?).join(' | ')
+  layer_obj = tag(model, layer_name)
+  inst.layer = layer_obj if layer_obj
   set_attrs(inst, {
     'UUID' => uuid,
     'Room_UUID' => group.get_attribute(DICT, 'UUID').to_s,
@@ -1834,6 +1841,9 @@ def activate_wall_draw_tool
     unless data
       Sketchup.status_text = ts('تم إلغاء إعداد رسم الحوائط.')
       return false
+    end
+    unless data.is_a?(Hash) && !data['room_name'].to_s.strip.empty?
+      raise TypeError, 'إعدادات رسم الحوائط غير مكتملة: اسم الغرفة مفقود.'
     end
     tool = WallDrawTool.new(data)
     model.select_tool(tool)
@@ -2562,7 +2572,7 @@ label{font-size:13px;font-weight:900;color:#d8e8ef}
 input{width:100%;height:34px;border:0;border-radius:7px;background:#111f2a;color:#fff;outline:1px solid #243d4f;text-align:center;font-size:13px}
 input:focus{outline:2px solid #39a245}
 .hint{font-size:11px;color:#8eabbc;line-height:1.5;margin-top:4px}
-.footer{display:flex;gap:8px;margin-top:12px;padding-bottom:8px;position:sticky;bottom:0;background:linear-gradient(180deg,rgba(7,19,29,0),#07131d 28%);padding-top:12px}
+.footer{display:flex;gap:8px;margin-top:12px}
 button{height:42px;border:0;border-radius:9px;font-size:14px;font-weight:900;cursor:pointer}
 .save{flex:2;background:#4de37a;color:#061923}
 .close{flex:1;background:#0b1b27;color:#fff;border:1px solid #243d4f}
