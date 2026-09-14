@@ -5070,14 +5070,6 @@ module MHD_WALL_SURVEY_V1
       effective_measure_mode
     )
 
-    # الوضع الرأسي (Z) — أسفل العنصر بالسنتيمتر
-    target_bottom_cm = resolve_item_bottom_cm(
-      item['level_cm'].to_f,
-      item['height_cm'].to_f,
-      TYPES[type][:level_mode] || 'bottom',
-      effective_measure_mode
-    )
-
     x_center = offset + width / 2.0
     base_point = inner_point(data, x_center)
 
@@ -5111,17 +5103,25 @@ module MHD_WALL_SURVEY_V1
     transformation = wall_axes * local_anchor
     instance = model_entities_for(wall).add_instance(definition, transformation)
 
-    # تصحيح الوضع الرأسي: نضع أسفل الموديل الفعلي على target_bottom_cm.
-    if TYPES[type][:level_mode].to_s != 'center'
-      target_bottom_z = data[:p1].z + target_bottom_cm.cm
-      actual_bottom_z = instance.bounds.min.z
-      delta_z = target_bottom_z - actual_bottom_z
-      instance.transform!(Geom::Transformation.translation([0, 0, delta_z])) if delta_z.abs > 0.001
-    else
-      # level_mode = 'center': نضع مركز الموديل على level_cm (بغض النظر عن outside/inside)
+    # ===== تصحيح الوضع الرأسي على أساس الحدود الفعلية للموديل =====
+    # ملاحظة: لا نستخدم item['height_cm'] النظري، بل bounds الفعلية من الـ SKP.
+    if TYPES[type][:level_mode].to_s == 'center'
+      # level_mode = 'center': نضع مركز الموديل الفعلي عند level_cm
       target_center_z = data[:p1].z + item['level_cm'].to_f.cm
       actual_center_z = instance.bounds.center.z
       delta_z = target_center_z - actual_center_z
+      instance.transform!(Geom::Transformation.translation([0, 0, delta_z])) if delta_z.abs > 0.001
+    elsif effective_measure_mode == 'inside'
+      # داخل المقاس: أعلى الموديل الفعلي عند level_cm
+      target_top_z = data[:p1].z + item['level_cm'].to_f.cm
+      actual_top_z = instance.bounds.max.z
+      delta_z = target_top_z - actual_top_z
+      instance.transform!(Geom::Transformation.translation([0, 0, delta_z])) if delta_z.abs > 0.001
+    else
+      # خارج المقاس: أسفل الموديل الفعلي عند level_cm
+      target_bottom_z = data[:p1].z + item['level_cm'].to_f.cm
+      actual_bottom_z = instance.bounds.min.z
+      delta_z = target_bottom_z - actual_bottom_z
       instance.transform!(Geom::Transformation.translation([0, 0, delta_z])) if delta_z.abs > 0.001
     end
 
@@ -5419,6 +5419,9 @@ module MHD_WALL_SURVEY_V1
 .editor{height:calc(100% - 40px);overflow:auto;padding:10px 10px 28px}.types{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.type{min-height:48px;padding:5px;background:#102735;border:1px solid #294557;color:#eaf4f8;border-radius:8px;font-weight:800;cursor:pointer}.type.active{border-color:#4de37a;background:#153727;color:#fff}.fields{margin-top:10px;border-top:1px solid #203948;padding-top:10px}.row{display:grid;grid-template-columns:105px 1fr;gap:8px;align-items:center;margin-bottom:7px}.row label{font-size:12px;font-weight:800}.row input{height:32px;background:#0a1720;color:#fff;border:1px solid #294557;border-radius:6px;text-align:center;outline:none}.row input:focus{border-color:#4de37a}.side{display:grid;grid-template-columns:1fr 1fr;gap:6px}.side button{height:32px;background:#102735;border:1px solid #294557;color:#fff;border-radius:6px;font-weight:800;cursor:pointer}.side button.active{border-color:#4de37a;background:#17412a}
 .add{width:100%;height:38px;background:#4de37a;color:#062016;border:0;border-radius:8px;font-weight:900;cursor:pointer}.items{margin-top:10px;border-top:1px solid #203948;padding-top:8px}.item{display:flex;gap:5px;align-items:center;background:#0e2230;border:1px solid #203948;border-radius:7px;padding:6px;margin-bottom:5px}.item-name{flex:1;font-size:12px;font-weight:800}.item small{display:block;color:#9eb5c2;margin-top:3px}.mini{height:28px;border:0;border-radius:5px;padding:0 8px;cursor:pointer;font-weight:800}.edit{background:#276b8c;color:#fff}.del{background:#7f3030;color:#fff}.foot{height:58px;border-top:1px solid #203948;padding:8px 12px;display:flex;gap:8px}.ok{flex:2;background:#4de37a;color:#061d13;border:0;border-radius:9px;font-weight:900;font-size:15px}.cancel{flex:1;background:#102735;color:#fff;border:1px solid #294557;border-radius:9px;font-weight:900}::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:#294557;border-radius:8px}
 .wall{fill:#102735;stroke:#6c8999;stroke-width:2}.open{fill:#06121b;stroke:#4de37a;stroke-width:2}.symbol{fill:#eaf4f8;stroke:#4de37a;stroke-width:2}.selected{stroke:#ffd54f!important;stroke-width:4!important}.dim{fill:#8ad8ff;font-size:11px;font-weight:bold}.name{fill:#fff;font-size:10px;font-weight:bold}
+.measure-badge{display:inline-block;padding:2px 7px;border-radius:5px;font-size:9.5px;font-weight:800;vertical-align:middle;letter-spacing:0.2px}
+.measure-badge.inside{background:rgba(46,125,50,.22);color:#7ee39c;border:1px solid rgba(77,227,122,.45)}
+.measure-badge.outside{background:rgba(184,134,11,.18);color:#ffd97e;border:1px solid rgba(255,193,7,.45)}
 .notice-overlay{position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;background:rgba(2,10,16,.72);padding:20px}.notice-overlay.show{display:flex}.notice-box{width:min(390px,92vw);background:#102735;border:1px solid #e85b5b;border-radius:12px;padding:18px;text-align:center;box-shadow:0 18px 55px rgba(0,0,0,.5)}.notice-icon{width:48px;height:48px;line-height:45px;margin:0 auto 10px;border:2px solid #ff6868;border-radius:50%;color:#ff6868;font-size:29px;font-weight:900}.notice-title{font-size:18px;font-weight:900;color:#fff;margin-bottom:7px}.notice-text{font-size:13px;line-height:1.8;color:#c9dbe5}.notice-close{width:100%;height:38px;margin-top:14px;border:0;border-radius:8px;background:#e85b5b;color:#fff;font-weight:900;cursor:pointer}
 @media(max-width:760px){.main{grid-template-columns:1fr;overflow:auto}.panel:first-child{min-height:330px}.editor{height:auto;overflow:visible;padding-bottom:28px}}
 </style></head><body>
@@ -5543,7 +5546,46 @@ function editItem(i){
   chooseType(it.type,true);
 }
 function deleteItem(i){items.splice(i,1);if(editIndex===i)editIndex=-1;renderList();draw();}
-function renderList(){if(!items.length){$('list').innerHTML=`<div class="hint">${esc(TX.no_items)}</div>`;return;}$('list').innerHTML=items.map((it,i)=>`<div class="item"><div class="item-name">${esc(it.name)}<small>${it.side==='يمين'?esc(TX.right):esc(TX.left)}: ${it.measure_cm} ${esc(TX.cm)} — ${esc(TX.height_word)}: ${it.level_cm} ${esc(TX.cm)}${it.type==='feed_box'?` — ${it.width_cm}×${it.height_cm} — ${esc(TX.depth_word)} ${it.depth_cm} ${esc(TX.cm)}`:''}</small></div><button class="mini edit" onclick="editItem(${i})">${esc(TX.edit)}</button><button class="mini del" onclick="deleteItem(${i})">${esc(TX.delete)}</button></div>`).join('');}
+function renderList(){
+  if(!items.length){
+    $('list').innerHTML = `<div class="hint">${esc(TX.no_items)}</div>`;
+    return;
+  }
+  $('list').innerHTML = items.map((it, i) => {
+    const spec = SPECS[it.type] || {};
+    const mm = it.measure_mode || 'outside';
+    const isOpening = spec.kind === 'opening';
+
+    // Badge للعناصر اللي مش باب/شباك
+    let badgeHtml = '';
+    if (!isOpening) {
+      const badgeCls = (mm === 'inside') ? 'inside' : 'outside';
+      const badgeTxt = (mm === 'inside')
+        ? (TX.measure_inside  || 'داخل المقاس')
+        : (TX.measure_outside || 'خارج المقاس');
+      badgeHtml = `<span class="measure-badge ${badgeCls}">${esc(badgeTxt)}</span>`;
+    }
+
+    // تفاصيل إضافية لعلبة التغذية
+    const widthPart = (it.type === 'feed_box')
+      ? ` — ${it.width_cm}×${it.height_cm} — ${esc(TX.depth_word)} ${it.depth_cm} ${esc(TX.cm)}`
+      : '';
+
+    const sideLabel = (it.side === 'يمين') ? esc(TX.right) : esc(TX.left);
+
+    return `<div class="item">
+      <div class="item-name">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:3px">
+          ${badgeHtml}
+          <span>${esc(it.name)}</span>
+        </div>
+        <small>${sideLabel}: ${it.measure_cm} ${esc(TX.cm)} — ${esc(TX.height_word)}: ${it.level_cm} ${esc(TX.cm)}${widthPart}</small>
+      </div>
+      <button class="mini edit" onclick="editItem(${i})">${esc(TX.edit)}</button>
+      <button class="mini del" onclick="deleteItem(${i})">${esc(TX.delete)}</button>
+    </div>`;
+  }).join('');
+}
 // نفس اتجاه الرسم المرئي المستخدم في نافذة الباب والشباك الأصلية.
 function xOffset(it){const s=SPECS[it.type];const mm=it.measure_mode||s.measure_mode||'outside';if(mm==='inside')return it.side==='شمال'?it.measure_cm:WALL_LEN-it.measure_cm;return it.side==='شمال'?it.measure_cm:WALL_LEN-it.measure_cm-it.width_cm;}
 function draw(){const sx=610/Math.max(WALL_LEN,1),sy=330/Math.max(WALL_H,1),wx=45,wy=35,wh=330;let out=`<rect class="wall" x="${wx}" y="${wy}" width="610" height="330"/><text class="dim" x="350" y="395" text-anchor="middle">${esc(TX.wall_length)}: ${WALL_LEN} ${esc(TX.cm)}</text><text class="dim" x="12" y="200" transform="rotate(-90 12 200)" text-anchor="middle">${esc(TX.wall_height)}: ${WALL_H} ${esc(TX.cm)}</text>`;
