@@ -140,9 +140,6 @@ module MHD_Opening_Engine_V30_SMART
       "ماكينه قهوه", "ماكينة قهوة", "ميكرويف"
     ].freeze
 
-    DOOR_KEYWORDS   = ["باب", "ضلفه", "ضلفة"].freeze
-    WINDOW_KEYWORDS = ["شباك", "نافذه", "نافذة"].freeze
-
     def norm(text)
       text.to_s
           .tr("أإآٱ", "اااا")
@@ -720,8 +717,6 @@ button{height:40px;border-radius:10px;font-size:14px;font-weight:900;cursor:poin
 .ok{flex:2;background:#4de37a;color:#061923}
 .ok:disabled{background:#2a3d33;color:#6a7a72;cursor:not-allowed}
 .cancel{flex:1;background:#0b1b27;color:#fff;border:1px solid #243d4f}
-
-/* ============ SMART PANEL ============ */
 .sm-row{display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-bottom:1px solid #1c3342;font-size:13px}
 .sm-row:last-child{border-bottom:none}
 .sm-label{font-weight:800;color:#a8c1cf}
@@ -755,7 +750,6 @@ button{height:40px;border-radius:10px;font-size:14px;font-weight:900;cursor:poin
 
   <div class="wrap">
 
-    <!-- ============ SMART PANEL ============ -->
     <div class="group" id="smartPanel">
       <div class="group-title">▼ تحليل الحيط الذكي</div>
       <div class="group-body">
@@ -764,7 +758,6 @@ button{height:40px;border-radius:10px;font-size:14px;font-weight:900;cursor:poin
         </div>
       </div>
     </div>
-    <!-- ================================== -->
 
     <div class="group">
       <div class="group-title">▼ نوع الفتحة</div>
@@ -831,6 +824,7 @@ function selectSide(el){
   el.classList.add('active');
   side=el.dataset.side;
   updatePreview();
+  if(smartSnapshot) renderSmartWall(smartSnapshot);
 }
 function setWallData(len, height){
   WALL_LEN = parseFloat(len || 0);
@@ -866,9 +860,9 @@ function updatePreview(){
   const typeIcon = document.getElementById('typeIcon');
   if(typeIcon){
     if(TYPE==='door'){
-      typeIcon.setAttribute('d',`M${openX+openW*.18} ${wallY+wallH} V${openY+8} H${openX+openW*.82} V${wallY+wallH} M${openX+openW*.67} ${openY+openH*.48} h1`);
+      typeIcon.setAttribute('d','M'+(openX+openW*.18)+' '+(wallY+wallH)+' V'+(openY+8)+' H'+(openX+openW*.82)+' V'+(wallY+wallH)+' M'+(openX+openW*.67)+' '+(openY+openH*.48)+' h1');
     }else{
-      typeIcon.setAttribute('d',`M${openX+5} ${openY+5} H${openX+openW-5} V${openY+openH-5} H${openX+5} Z M${openX+openW/2} ${openY+5} V${openY+openH-5} M${openX+5} ${openY+openH/2} H${openX+openW-5}`);
+      typeIcon.setAttribute('d','M'+(openX+5)+' '+(openY+5)+' H'+(openX+openW-5)+' V'+(openY+openH-5)+' H'+(openX+5)+' Z M'+(openX+openW/2)+' '+(openY+5)+' V'+(openY+openH-5)+' M'+(openX+5)+' '+(openY+openH/2)+' H'+(openX+openW-5));
     }
   }
   const dimM=document.getElementById('dimMeasure');
@@ -894,9 +888,9 @@ function updatePreview(){
     txtW.setAttribute('y',openY-16);
     txtW.textContent='العرض ' + w + ' سم';
   }
+  if(smartSnapshot) renderSmartWall(smartSnapshot);
 }
 
-// ==================== SMART WALL RENDER ====================
 function renderSmartWall(snapshot){
   smartSnapshot = snapshot;
   const body = document.getElementById('smartBody');
@@ -905,28 +899,23 @@ function renderSmartWall(snapshot){
 
   if(!snapshot){
     body.innerHTML = '<div class="sm-units">لا توجد بيانات حائط كافية للتحليل.</div>';
-    if(okBtn){ okBtn.disabled = false; }
+    if(okBtn){ okBtn.disabled = false; okBtn.textContent='إنشاء'; }
     return;
   }
 
   const L = snapshot.wall_length_cm;
   function pct(v){ return Math.min(100, Math.max(0, (v / L) * 100)); }
 
-  // حساب عرض الفتحة الحالية الجاري إدخالها
-  const currentOpeningWidth = Math.max(0, parseFloat(document.getElementById('width_cm').value || 0));
-  const currentSill = (TYPE === 'window') ? Math.max(0, parseFloat(document.getElementById('sill_cm').value || 0)) : 0;
-  const currentMeasure = Math.max(0, parseFloat(document.getElementById('measure_cm').value || 0));
+  const currentOpeningWidth = Math.max(0, parseFloat((document.getElementById('width_cm')||{}).value || 0));
+  const currentMeasure = Math.max(0, parseFloat((document.getElementById('measure_cm')||{}).value || 0));
 
-  // نحدد على مين تأثير الفتحة الحالية
   let currentAffectsBase = true;
   let currentAffectsUpper = false;
 
   if(TYPE === 'window'){
-    // شباك: يأثر على الاتنين
     currentAffectsBase = true;
     currentAffectsUpper = true;
   } else if(TYPE === 'door'){
-    // باب: بس السفلي
     currentAffectsBase = true;
     currentAffectsUpper = false;
   }
@@ -943,42 +932,42 @@ function renderSmartWall(snapshot){
     if(overflow) fillCls = 'sm-fill over';
     else if(usedPct > 90) fillCls = 'sm-fill warn';
 
-    let html = `<div class="sm-zone">
-      <div class="sm-zone-title ${zoneCls === 'upper' ? 'upper' : ''}">
-        <span>${title}</span>
-        <span>${used.toFixed(1)} / ${L.toFixed(1)} سم</span>
-      </div>
-      <div class="sm-bar"><div class="${fillCls}" style="width:${usedPct}%"></div></div>
-      <div class="sm-row">
-        <span class="sm-label">${overflow ? 'الزيادة' : 'الفاضل'}</span>
-        <span class="sm-value" style="color:${overflow ? '#ff8a80' : '#7ee39c'}">
-          ${overflow ? ('+ ' + overflowCm.toFixed(1) + ' سم تجاوز!') : (remain.toFixed(1) + ' سم')}
-        </span>
-      </div>`;
+    let html = '<div class="sm-zone">' +
+      '<div class="sm-zone-title ' + (zoneCls === 'upper' ? 'upper' : '') + '">' +
+        '<span>' + title + '</span>' +
+        '<span>' + used.toFixed(1) + ' / ' + L.toFixed(1) + ' سم</span>' +
+      '</div>' +
+      '<div class="sm-bar"><div class="' + fillCls + '" style="width:' + usedPct + '%"></div></div>' +
+      '<div class="sm-row">' +
+        '<span class="sm-label">' + (overflow ? 'الزيادة' : 'الفاضل') + '</span>' +
+        '<span class="sm-value" style="color:' + (overflow ? '#ff8a80' : '#7ee39c') + '">' +
+          (overflow ? ('+ ' + overflowCm.toFixed(1) + ' سم تجاوز!') : (remain.toFixed(1) + ' سم')) +
+        '</span>' +
+      '</div>';
 
     if(units && units.length){
       html += '<div class="sm-units"><b>العناصر الحالية:</b><br>' +
-        units.map(u => {
-          const tag = u.is_appliance ? ' <span class="sm-badge appliance">جهاز</span>' : '';
-          return `• ${u.name}${tag} — ${u.width_cm} سم (${u.offset_cm}→${u.end_cm})`;
+        units.map(function(u){
+          var tag = u.is_appliance ? ' <span class="sm-badge appliance">جهاز</span>' : '';
+          return '• ' + u.name + tag + ' — ' + u.width_cm + ' سم (' + u.offset_cm + '→' + u.end_cm + ')';
         }).join('<br>') + '</div>';
     } else {
       html += '<div class="sm-units">لا توجد عناصر مسجّلة على هذا الجزء من الحيط.</div>';
     }
 
     if(openingDelta > 0){
-      html += `<div class="sm-units" style="color:#8ad8ff">
-        ➕ الفتحة الحالية تضيف: <b>${openingDelta.toFixed(1)} سم</b> على هذا الجزء.
-      </div>`;
+      html += '<div class="sm-units" style="color:#8ad8ff">' +
+        '➕ الفتحة الحالية تضيف: <b>' + openingDelta.toFixed(1) + ' سم</b> على هذا الجزء.' +
+      '</div>';
     }
 
     if(overflow){
-      html += `<div class="sm-warn">
-        ⚠️ تجاوزت الحيط بمقدار <b>${overflowCm.toFixed(1)} سم</b>.<br>
-        <b>الحل:</b> قلّل المقاس بمقدار <b>${overflowCm.toFixed(1)} سم</b> أو غيّر ترتيب العناصر.
-      </div>`;
+      html += '<div class="sm-warn">' +
+        '⚠️ تجاوزت الحيط بمقدار <b>' + overflowCm.toFixed(1) + ' سم</b>.<br>' +
+        '<b>الحل:</b> قلّل المقاس بمقدار <b>' + overflowCm.toFixed(1) + ' سم</b> أو غيّر ترتيب العناصر.' +
+      '</div>';
     } else {
-      html += `<div class="sm-ok">✅ مقاس ${title} سليم — الفاضل <b>${remain.toFixed(1)} سم</b>.</div>`;
+      html += '<div class="sm-ok">✅ مقاس ' + title + ' سليم — الفاضل <b>' + remain.toFixed(1) + ' سم</b>.</div>';
     }
 
     html += '</div>';
@@ -986,10 +975,6 @@ function renderSmartWall(snapshot){
   }
 
   let out = '';
-  let baseOverflowFlag = false;
-  let upperOverflowFlag = false;
-
-  // السفلي
   const baseResult = zoneBlock(
     'السفلي',
     snapshot.base_used_cm,
@@ -1001,9 +986,7 @@ function renderSmartWall(snapshot){
     'base'
   );
   out += baseResult.html;
-  baseOverflowFlag = baseResult.overflow;
 
-  // العلوي
   const upperResult = zoneBlock(
     'العلوي',
     snapshot.upper_used_cm,
@@ -1015,21 +998,18 @@ function renderSmartWall(snapshot){
     'upper'
   );
   out += upperResult.html;
-  upperOverflowFlag = upperResult.overflow;
 
-  // الفتحات الحالية
   if(snapshot.openings && snapshot.openings.length){
     out += '<div class="sm-units" style="border-top:1px solid #1c3342;padding-top:8px;margin-top:8px">' +
       '<b>الفتحات المسجّلة:</b><br>' +
-      snapshot.openings.map(o =>
-        `• ${o.name} — ${o.width_cm} سم (${o.offset_cm}→${o.end_cm})`
-      ).join('<br>') + '</div>';
+      snapshot.openings.map(function(o){
+        return '• ' + o.name + ' — ' + o.width_cm + ' سم (' + o.offset_cm + '→' + o.end_cm + ')';
+      }).join('<br>') + '</div>';
   }
 
   body.innerHTML = out;
 
-  // لو في overflow في الجزء اللي بتأثر عليه الفتحة، نعطّل الزرار
-  const blocksCurrent = (currentAffectsBase && baseOverflowFlag) || (currentAffectsUpper && upperOverflowFlag);
+  const blocksCurrent = (currentAffectsBase && baseResult.overflow) || (currentAffectsUpper && upperResult.overflow);
   if(okBtn){
     if(blocksCurrent){
       okBtn.disabled = true;
@@ -1040,12 +1020,11 @@ function renderSmartWall(snapshot){
     }
   }
 }
-// =====================================================
 
 function submitData(){
   if(smartSnapshot){
     const L = smartSnapshot.wall_length_cm;
-    const w = Math.max(0, parseFloat(document.getElementById('width_cm').value || 0));
+    const w = Math.max(0, parseFloat((document.getElementById('width_cm')||{}).value || 0));
     const baseUsed = smartSnapshot.base_used_cm + ((TYPE === 'window' || TYPE === 'door') ? w : 0);
     const upperUsed = smartSnapshot.upper_used_cm + ((TYPE === 'window') ? w : 0);
     if(baseUsed > L + 0.1){
@@ -1110,8 +1089,15 @@ updatePreview();
 
     last_wall_pid = wall.persistent_id rescue wall.entityID
     timer_id = nil
+    smart_timer = nil
 
-    # ===== بث التحليل الذكي للحائط كل 0.6 ثانية =====
+    # أول snapshot فوري
+    begin
+      snap_initial = smart_wall_snapshot(wall)
+      dlg.execute_script("renderSmartWall(#{snap_initial ? snap_initial.to_json : 'null'});") rescue nil
+    rescue
+    end
+
     smart_timer = UI.start_timer(0.6, true) do
       begin
         current_wall = selected_wall
@@ -1122,7 +1108,6 @@ updatePreview();
       end
     end
 
-    # ===== تحديث الحائط عند تغيير التحديد =====
     timer_id = UI.start_timer(0.25, true) do
       begin
         current_wall = selected_wall
@@ -1139,18 +1124,10 @@ updatePreview();
         hgt = current_data[:wall_h_cm].round(1)
         dlg.execute_script("setWallData(#{len}, #{hgt});")
 
-        # حدّث التحليل الذكي فورًا
         snap = smart_wall_snapshot(current_wall)
         dlg.execute_script("renderSmartWall(#{snap ? snap.to_json : 'null'});")
       rescue
       end
-    end
-
-    # أول snapshot فوري
-    begin
-      snap_initial = smart_wall_snapshot(wall)
-      dlg.execute_script("renderSmartWall(#{snap_initial ? snap_initial.to_json : 'null'});") rescue nil
-    rescue
     end
 
     stop_timer = proc do
@@ -1187,7 +1164,6 @@ updatePreview();
         next
       end
 
-      # ===== فحص أخير قبل التنفيذ =====
       snap = smart_wall_snapshot(current_wall)
       if snap
         w = input['width_cm'].to_f
