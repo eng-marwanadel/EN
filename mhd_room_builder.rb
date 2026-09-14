@@ -607,18 +607,14 @@ def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, 
   floor_face.reverse! if floor_face.normal.z < 0
   floor_face.pushpull(-floor_t)
 
-  # مادة مستقرة للأرضية حتى لا تتحول للون الأسود عند إعادة بناء الركن/الشطرة.
-  floor_mat_name = 'MHD Floor Neutral'
-  floor_mat = model.materials[floor_mat_name] || model.materials.add(floor_mat_name)
-  begin
-    floor_mat.color = Sketchup::Color.new(225, 225, 225)
-    floor_mat.alpha = 1.0 if floor_mat.respond_to?(:alpha=)
-  rescue
-  end
+  # الأرضية بدون Material مخصص: تستخدم لون الـFace الطبيعي في SketchUp،
+  # وبذلك لا تتحول للون أسود عند إعادة البناء أو عند تحديث الشطرة/الحائط.
+  # نزيل أي Material قديم من كل الأوجه (Front + Back) حتى لا تنتقل خامة سوداء قديمة.
   floor_def.entities.grep(Sketchup::Face).each do |face|
     begin
-      face.material = floor_mat
-      face.back_material = floor_mat
+      face.material = nil
+      face.back_material = nil
+      face.reverse! if face.normal.z < 0
     rescue
     end
   end
@@ -633,6 +629,13 @@ def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, 
     end
   end
 
+  # تأكيد أن الـInstance نفسه لا يحمل Material يطغى على Geometry الفرعية.
+  begin
+    floor_inst_material_clear = floor_def.entities.grep(Sketchup::Face)
+  rescue
+    floor_inst_material_clear = []
+  end
+
   floor_inst = room_group.entities.add_instance(floor_def, Geom::Transformation.new)
   floor_inst.name = ts('الأرضية')
   floor_inst.layer = tag(model, "#{room_name} | #{ts('الأرضية')}")
@@ -645,6 +648,32 @@ def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, 
     'حدود الغرفة' => pts.map { |q| pt_to_s(q) }.to_json
   })
   floor_inst
+end
+
+
+def normalize_room_floor_appearance(room_group)
+  return false unless room_group && room_group.valid?
+  begin
+    room_group.entities.grep(Sketchup::ComponentInstance).each do |inst|
+      next unless inst.valid?
+      next unless inst.get_attribute(DICT, 'النوع').to_s == 'أرضية'
+      definition = inst.definition
+      definition.entities.grep(Sketchup::Face).each do |face|
+        face.material = nil
+        face.back_material = nil
+        face.reverse! if face.normal.z < 0
+      end
+      definition.entities.grep(Sketchup::Edge).each do |edge|
+        edge.hidden = true if edge.respond_to?(:hidden=)
+        edge.soft = true if edge.respond_to?(:soft=)
+        edge.smooth = true if edge.respond_to?(:smooth=)
+      end
+    end
+  rescue
+  end
+  true
+rescue
+  false
 end
 
 def apply_smart_room_update(room_group, new_data)
@@ -1192,6 +1221,7 @@ def synchronize_room_geometry(room_group, pts, room_data)
                      wall_h_cm, wall_t_cm, name, room_uuid)
 
   rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid) if floor_on && floor_t_cm > 0
+  normalize_room_floor_appearance(room_group) if respond_to?(:normalize_room_floor_appearance)
 
   if ceiling_on && ceil_t_cm > 0
     build_ceiling(model, room_group.entities, name, room_uuid, outward, pts,
@@ -1414,35 +1444,49 @@ end
 
 
 # =========================================================
-# MHD WALL DRAW ENGINE V1 - Dynamic laser + live dimensions
+# MHD WALL DRAW ENGINE V2 - Stable dynamic laser wall drawing
 # =========================================================
 def wall_draw_defaults
   d = saved_values rescue {}
+  d = {} unless d.is_a?(Hash)
   {
-    'room_name' => d['room_name'].to_s.empty? ? ts('غرفة جديدة') : d['room_name'].to_s,
+    'room_name' => d['room_name'].to_s.strip.empty? ? ts('غرفة جديدة').to_s : d['room_name'].to_s.strip,
     'wall_h' => (d['wall_h'].to_f > 0 ? d['wall_h'].to_f : 280.0),
     'wall_t' => (d['wall_t'].to_f > 0 ? d['wall_t'].to_f : 10.0),
     'floor_t' => (d['floor_t'].to_f >= 0 ? d['floor_t'].to_f : 10.0),
     'ceil_t' => (d['ceil_t'].to_f >= 0 ? d['ceil_t'].to_f : 10.0),
-    'create_floor' => d.key?('create_floor') ? d['create_floor'] : 'yes',
-    'create_ceiling' => d.key?('create_ceiling') ? d['create_ceiling'] : 'no',
-    'ceiling_pattern' => d['ceiling_pattern'].to_s.empty? ? 'flat' : d['ceiling_pattern'].to_s,
-    'drop_reference' => d['drop_reference'].to_s.empty? ? 'below_wall' : d['drop_reference'].to_s
+    'create_floor' => d.key?('create_floor') ? d['create_floor'].to_s : 'yes',
+    'create_ceiling' => d.key?('create_ceiling') ? d['create_ceiling'].to_s : 'no',
+    'ceiling_pattern' => d['ceiling_pattern'].to_s.strip.empty? ? 'flat' : d['ceiling_pattern'].to_s,
+    'drop_reference' => d['drop_reference'].to_s.strip.empty? ? 'below_wall' : d['drop_reference'].to_s
+  }
+rescue
+  {
+    'room_name' => ts('غرفة جديدة').to_s,
+    'wall_h' => 280.0,
+    'wall_t' => 10.0,
+    'floor_t' => 10.0,
+    'ceil_t' => 10.0,
+    'create_floor' => 'yes',
+    'create_ceiling' => 'no',
+    'ceiling_pattern' => 'flat',
+    'drop_reference' => 'below_wall'
   }
 end
 
 def wall_draw_setup_dialog
   d = wall_draw_defaults
   labels = [
-    ts('اسم الغرفة'), ts('ارتفاع الحائط سم'), ts('سمك الحائط سم'),
-    ts('سمك الأرضية سم'), ts('سمك السقف سم'), ts('إنشاء أرضية؟'), ts('إنشاء سقف؟')
+    ts('اسم الغرفة').to_s, ts('ارتفاع الحائط سم').to_s, ts('سمك الحائط سم').to_s,
+    ts('سمك الأرضية سم').to_s, ts('سمك السقف سم').to_s, ts('إنشاء أرضية؟').to_s, ts('إنشاء سقف؟').to_s
   ]
   values = [
-    d['room_name'], d['wall_h'], d['wall_t'], d['floor_t'], d['ceil_t'],
-    d['create_floor'], d['create_ceiling']
+    d['room_name'].to_s, d['wall_h'].to_f, d['wall_t'].to_f, d['floor_t'].to_f, d['ceil_t'].to_f,
+    d['create_floor'].to_s, d['create_ceiling'].to_s
   ]
-  input = UI.inputbox(labels, values, nil, ts('MHD - إعداد رسم الحوائط'))
-  return nil unless input
+  title = ts('MHD - إعداد رسم الحوائط').to_s
+  input = UI.inputbox(labels, values, nil, title)
+  return nil unless input.is_a?(Array)
   room_name, wall_h, wall_t, floor_t, ceil_t, floor_on, ceiling_on = input
   wall_h = wall_h.to_f
   wall_t = wall_t.to_f
@@ -1460,17 +1504,37 @@ def wall_draw_setup_dialog
   )
   save_values(data) rescue nil
   data
+rescue
+  nil
+end
+
+def normalize_wall_draw_data(data)
+  d = data.is_a?(Hash) ? data : {}
+  room_name = d['room_name'].to_s.strip
+  room_name = ts('غرفة جديدة').to_s if room_name.empty?
+  {
+    'room_name' => room_name,
+    'wall_h' => (d['wall_h'].to_f > 0 ? d['wall_h'].to_f : 280.0),
+    'wall_t' => (d['wall_t'].to_f > 0 ? d['wall_t'].to_f : 10.0),
+    'floor_t' => [d['floor_t'].to_f, 0.0].max,
+    'ceil_t' => [d['ceil_t'].to_f, 0.0].max,
+    'create_floor' => d['create_floor'].to_s.empty? ? 'yes' : d['create_floor'].to_s,
+    'create_ceiling' => d['create_ceiling'].to_s.empty? ? 'no' : d['create_ceiling'].to_s,
+    'ceiling_pattern' => d['ceiling_pattern'].to_s.empty? ? 'flat' : d['ceiling_pattern'].to_s,
+    'drop_reference' => d['drop_reference'].to_s.empty? ? 'below_wall' : d['drop_reference'].to_s
+  }
 end
 
 def create_wall_draw_session(data)
   model = Sketchup.active_model
+  return nil unless model && model.valid?
+  data = normalize_wall_draw_data(data)
   group = model.active_entities.add_group
-  room_name = data.is_a?(Hash) ? data['room_name'].to_s.strip : ''
-  room_name = ts('غرفة جديدة') if room_name.empty?
+  room_name = data['room_name'].to_s.strip
   room_uuid = uuid.to_s
   group_name = "#{room_name} | #{ts('رسم حوائط').to_s}"
   group.name = group_name
-  room_tag = tag(model, room_name)
+  room_tag = tag(model, room_name.to_s)
   group.layer = room_tag if room_tag
   set_attrs(group, {
     'UUID' => room_uuid,
@@ -1489,11 +1553,13 @@ def create_wall_draw_session(data)
     'beams_json' => [].to_json
   })
   group
+rescue => e
+  raise "تعذر إنشاء جلسة الرسم: #{e.class}: #{e.message}"
 end
 
 def wall_draw_add_segment(group, p1, p2, height_cm, thickness_cm, number)
   model = Sketchup.active_model
-  return nil unless group && group.valid? && p1 && p2
+  return nil unless model && model.valid? && group && group.valid? && p1 && p2
   vec = p1.vector_to(p2)
   return nil if vec.length <= 0.1.mm
   dir = vec.clone
@@ -1505,22 +1571,24 @@ def wall_draw_add_segment(group, p1, p2, height_cm, thickness_cm, number)
   q2 = p2.offset(perp, half)
   q3 = p2.offset(perp.reverse, half)
   q4 = p1.offset(perp.reverse, half)
-  defn = model.definitions.add("MHD_DRAW_WALL_#{Time.now.to_f}_#{rand(1_000_000)}")
+  stamp = Time.now.to_f
+  defn = model.definitions.add("MHD_DRAW_WALL_#{stamp}_#{rand(1_000_000)}".to_s)
   add_prism(defn.entities, q1, q2, q3, q4, 0, height_cm.to_f.cm)
   inst = group.entities.add_instance(defn, Geom::Transformation.new)
-  name = format('%s %02d', ts('حائط'), number.to_i)
+  name = format('%s %02d', ts('حائط').to_s, number.to_i)
   inst.name = name
   room_name = group.get_attribute(DICT, 'اسم الغرفة').to_s
-  layer_name = [room_name, name.to_s].reject(&:empty?).join(' | ')
-  layer_obj = tag(model, layer_name)
+  room_name = ts('غرفة جديدة').to_s if room_name.strip.empty?
+  layer_name = [room_name, name.to_s].reject { |v| v.to_s.strip.empty? }.join(' | ')
+  layer_obj = tag(model, layer_name.to_s)
   inst.layer = layer_obj if layer_obj
   set_attrs(inst, {
-    'UUID' => uuid,
+    'UUID' => uuid.to_s,
     'Room_UUID' => group.get_attribute(DICT, 'UUID').to_s,
     'النوع' => 'حائط',
-    'اسم الغرفة' => group.get_attribute(DICT, 'اسم الغرفة').to_s,
+    'اسم الغرفة' => room_name,
     'رقم الحائط' => number.to_i,
-    'الاسم' => name,
+    'الاسم' => name.to_s,
     'الارتفاع سم' => height_cm.to_f,
     'السمك سم' => thickness_cm.to_f,
     'طول الحائط سم' => p1.distance(p2).to_cm.round(2),
@@ -1529,45 +1597,21 @@ def wall_draw_add_segment(group, p1, p2, height_cm, thickness_cm, number)
     'رسم_تفاعلي' => 'نعم'
   })
   inst
-rescue
+rescue => e
+  UI.messagebox("خطأ في إنشاء الحائط رقم #{number}:\n#{e.class}: #{e.message}") rescue nil
   nil
 end
 
-def finalize_wall_draw_session(tool)
-  group = tool.instance_variable_get(:@group)
-  pts = tool.instance_variable_get(:@points)
-  data = tool.instance_variable_get(:@data)
-  return false unless group && group.valid? && pts && pts.length >= 3
-  pts = pts.map { |p| Geom::Point3d.new(p.x, p.y, 0) }
-  pts.pop if pts.length > 1 && pts[-1].distance(pts[0]) <= 0.1.cm
-  unless polygon_valid_for_wall_edit?(pts)
-    UI.messagebox(ts('شكل الحوائط غير صالح أو غير مغلق.'))
-    return false
-  end
-  model = Sketchup.active_model
-  model.start_operation('MHD Finish Wall Drawing', true)
-  begin
-    group.set_attribute(DICT, 'النوع', 'غرفة')
-    group.name = data['room_name'].to_s
-    room_uuid = group.get_attribute(DICT, 'UUID').to_s
-    save_room_pts(group, pts)
-    save_build_data(group, data)
-    group.set_attribute(DICT, 'shatras_json', [].to_json) if group.get_attribute(DICT, 'shatras_json').to_s.empty?
-    group.set_attribute(DICT, 'beams_json', [].to_json) if group.get_attribute(DICT, 'beams_json').to_s.empty?
-    synchronize_room_geometry(group, pts, data)
-    model.commit_operation
-    UI.messagebox("✅ #{ts('تم إنهاء رسم الحوائط بنجاح')}\n#{ts('عدد الحوائط')}: #{pts.length}")
-    true
-  rescue => e
-    model.abort_operation rescue nil
-    UI.messagebox("Error:\n#{e.message}")
-    false
-  end
+def wall_draw_temporary_cleanup(group)
+  group.erase! if group && group.valid?
+rescue
 end
 
 class WallDrawTool
+  SNAP_DEGREES = 5.0
+
   def initialize(data)
-    @data = data
+    @data = MHD_RoomBuilder_Context.normalize_wall_draw_data(data)
     @group = nil
     @points = []
     @preview_point = nil
@@ -1576,22 +1620,23 @@ class WallDrawTool
     @wall_number = 1
     @ip = Sketchup::InputPoint.new
     @active = false
+    @snapped_angle = nil
+    @snap_name = nil
   end
 
   def activate
-    model = Sketchup.active_model
-    @group = MHD_RoomBuilder_Context.create_wall_draw_session(@data)
-    unless @group && @group.valid?
-      @active = false
-      raise 'تعذر إنشاء مجموعة رسم الحوائط.'
-    end
     @active = true
-    Sketchup.status_text = MHD_RoomBuilder_Context.ts('🧱 انقر لتحديد بداية الحائط. بعد النقرة حرّك الماوس وسيظهر الليزر + المقاس + رقم الحائط.')
-    model.active_view.invalidate
+    @group = nil
+    set_status('🧱 اضغط كليك لتحديد نقطة البداية. حرّك الماوس لرؤية الليزر والمقاس.')
+    Sketchup.active_model.active_view.invalidate
+  rescue => e
+    @active = false
+    UI.messagebox("خطأ في تفعيل أداة الرسم:\n#{e.class}: #{e.message}") rescue nil
   end
 
   def deactivate(_view)
-    Sketchup.status_text = ''
+    Sketchup.status_text = ''.to_s
+  rescue
   end
 
   def enableVCB?
@@ -1602,34 +1647,38 @@ class WallDrawTool
     return unless @active
     begin
       view.line_width = 3
-      view.drawing_color = Sketchup::Color.new(255, 45, 45)
       if @points.length >= 1 && (@preview_point || @last_cursor_point)
         p1 = @points[-1]
         p2 = @preview_point || @last_cursor_point
+        view.drawing_color = Sketchup::Color.new(255, 45, 45)
         view.draw(GL_LINES, [p1, p2])
 
-        view.drawing_color = Sketchup::Color.new(255, 215, 0)
-        view.line_width = 2
-        tick = 8.cm
         dir = p1.vector_to(p2)
         if dir.length > 0.1.mm
           dir.normalize!
           perp = Geom::Vector3d.new(-dir.y, dir.x, 0)
           perp.normalize!
           mid = Geom::Point3d.new((p1.x + p2.x) / 2.0, (p1.y + p2.y) / 2.0, 0)
+          tick = 8.cm
+          view.line_width = 2
+          view.drawing_color = Sketchup::Color.new(255, 215, 0)
           view.draw(GL_LINES, [mid.offset(perp, tick / 2.0), mid.offset(perp.reverse, tick / 2.0)])
           len_cm = p1.distance(p2).to_cm
-          label = "#{MHD_RoomBuilder_Context.ts('حائط')} #{format('%02d', @wall_number)}\n#{MHD_RoomBuilder_Context.ts('الطول')}: #{len_cm.round(1)} سم"
-          view.draw_text(mid.offset(Z_AXIS, 8.cm), label)
+          angle = segment_angle_deg(p1, p2)
+          label = "#{MHD_RoomBuilder_Context.ts('حائط').to_s} #{format('%02d', @wall_number)}\n#{MHD_RoomBuilder_Context.ts('الطول').to_s}: #{len_cm.round(1)} سم\n#{MHD_RoomBuilder_Context.ts('الزاوية').to_s}: #{angle.round(1)}°"
+          label += "\n↯ #{@snap_name}" if @snap_name
+          view.draw_text(mid.offset(Z_AXIS, 8.cm), label.to_s)
         end
+      elsif @points.empty? && @last_cursor_point
+        view.draw_points([@last_cursor_point], 10, 1, Sketchup::Color.new(0, 190, 255))
       end
 
       if @points.length >= 1
         view.drawing_color = Sketchup::Color.new(0, 190, 255)
         view.draw_points([@points.first], 10, 1, Sketchup::Color.new(0, 190, 255))
+        view.draw_points([@points[-1]], 9, 1, Sketchup::Color.new(255, 170, 0))
       end
     rescue
-      # الرسم البصري لا يجب أن يعطل أداة إنشاء الحوائط.
     end
   end
 
@@ -1642,23 +1691,24 @@ class WallDrawTool
     @last_cursor_point = p
     if @points.empty?
       @preview_point = p
-      Sketchup.status_text = MHD_RoomBuilder_Context.ts('انقر هنا لتحديد بداية الحائط.')
+      set_status('انقر لتثبيت نقطة بداية الحائط.')
       view.invalidate
       return
     end
     start = @points[-1]
-    vec = start.vector_to(p)
-    if vec.length > 0.1.mm
-      if @typed_length_cm && @typed_length_cm > 0
-        dir = vec.clone
-        dir.normalize!
-        @preview_point = start.offset(dir, @typed_length_cm.cm)
-      else
-        @preview_point = p
+    cursor = apply_smart_snap(start, p)
+    if @typed_length_cm && @typed_length_cm > 0
+      vec = start.vector_to(cursor)
+      if vec.length > 0.1.mm
+        vec.normalize!
+        cursor = start.offset(vec, @typed_length_cm.cm)
       end
     end
+    @preview_point = cursor
     update_status
     view.invalidate
+  rescue => e
+    Sketchup.status_text = "Wall Draw: #{e.class}: #{e.message}".to_s rescue nil
   end
 
   def onLButtonDown(_flags, x, y, view)
@@ -1669,23 +1719,25 @@ class WallDrawTool
     p = Geom::Point3d.new(p.x, p.y, 0)
 
     if @points.empty?
+      ensure_session!
       @points << p
       @preview_point = p
-      Sketchup.status_text = MHD_RoomBuilder_Context.ts('حائط 01: حرّك الماوس لتحديد الاتجاه والطول.')
+      set_status('حائط 01: حرّك الماوس ثم اضغط كليك لتثبيت الحائط.')
       view.invalidate
       return
     end
 
     start = @points[-1]
-    target = @preview_point || p
+    target = @preview_point || apply_smart_snap(start, p)
     if @points.length >= 3 && target.distance(@points.first) <= 10.cm
       target = @points.first
       commit_segment(target, view)
       close_polygon(view)
       return
     end
-
     commit_segment(target, view)
+  rescue => e
+    UI.messagebox("خطأ أثناء رسم الحائط:\n#{e.class}: #{e.message}") rescue nil
   end
 
   def onUserText(text, view)
@@ -1719,16 +1771,10 @@ class WallDrawTool
 
   def onRButtonDown(_flags, _x, _y, _view)
     menu = UI::Menu.new
-    menu.add_item(MHD_RoomBuilder_Context.ts('✅ إنهاء وإغلاق الغرفة')) do
-      close_polygon(nil)
-    end
-    menu.add_item(MHD_RoomBuilder_Context.ts('↩️ حذف آخر حائط')) do
-      undo_last(nil)
-    end
+    menu.add_item('✅ إنهاء وإغلاق الغرفة') { close_polygon(nil) }
+    menu.add_item('↩️ حذف آخر حائط') { undo_last(nil) }
     menu.add_separator
-    menu.add_item(MHD_RoomBuilder_Context.ts('❌ إلغاء الرسم')) do
-      cancel_session
-    end
+    menu.add_item('❌ إلغاء الرسم') { cancel_session }
     menu.show
   end
 
@@ -1738,41 +1784,80 @@ class WallDrawTool
 
   private
 
+  def set_status(text)
+    Sketchup.status_text = text.to_s
+  rescue
+  end
+
+  def ensure_session!
+    return @group if @group && @group.valid?
+    @group = MHD_RoomBuilder_Context.create_wall_draw_session(@data)
+    raise 'تعذر إنشاء جلسة رسم الحوائط.' unless @group && @group.valid?
+    @group
+  end
+
+  def segment_angle_deg(p1, p2)
+    dx = p2.x - p1.x
+    dy = p2.y - p1.y
+    Math.atan2(dy, dx) * 180.0 / Math::PI
+  rescue
+    0.0
+  end
+
+  def apply_smart_snap(start, point)
+    @snapped_angle = nil
+    @snap_name = nil
+    vec = start.vector_to(point)
+    return point if vec.length <= 0.1.mm
+    raw_angle = Math.atan2(vec.y, vec.x)
+    raw_deg = (raw_angle * 180.0 / Math::PI) % 360.0
+    candidates = (0..7).map { |i| i * 45.0 }
+    nearest = candidates.min_by { |a| angular_diff(raw_deg, a) }
+    diff = angular_diff(raw_deg, nearest)
+    if diff <= SNAP_DEGREES
+      len = vec.length
+      rad = nearest * Math::PI / 180.0
+      snapped = Geom::Point3d.new(start.x + Math.cos(rad) * len, start.y + Math.sin(rad) * len, 0)
+      @snapped_angle = nearest
+      @snap_name = nearest % 90.0 == 0 ? 'Snap 90°' : 'Snap 45°'
+      snapped
+    else
+      point
+    end
+  rescue
+    point
+  end
+
+  def angular_diff(a, b)
+    d = (a - b).abs % 360.0
+    d > 180.0 ? 360.0 - d : d
+  end
+
   def update_status
     return if @points.empty?
     p = @preview_point || @last_cursor_point
     return unless p
     start = @points[-1]
     len = start.distance(p).to_cm
-    wall_no = format('%02d', @wall_number)
-    angle = nil
-    if @points.length >= 2
-      prev = @points[-2]
-      a = prev.vector_to(start)
-      b = start.vector_to(p)
-      if a.length > 0.1.mm && b.length > 0.1.mm
-        a.normalize!
-        b.normalize!
-        dot = [[a.dot(b), -1.0].max, 1.0].min
-        angle = Math.acos(dot) * 180.0 / Math::PI
-      end
-    end
-    msg = "#{MHD_RoomBuilder_Context.ts('حائط')} #{wall_no} | #{MHD_RoomBuilder_Context.ts('الطول')}: #{len.round(1)} سم"
-    msg += " | #{MHD_RoomBuilder_Context.ts('زاوية الاتجاه')}: #{angle.round(1)}°" if angle
-    msg += " | #{MHD_RoomBuilder_Context.ts('اكتب المقاس مباشرة ثم Enter')}"
-    Sketchup.status_text = msg
+    angle = segment_angle_deg(start, p)
+    msg = "#{MHD_RoomBuilder_Context.ts('حائط').to_s} #{format('%02d', @wall_number)} | #{MHD_RoomBuilder_Context.ts('الطول').to_s}: #{len.round(1)} سم | #{MHD_RoomBuilder_Context.ts('الزاوية').to_s}: #{angle.round(1)}°"
+    msg += " | #{@snap_name}" if @snap_name
+    msg += ' | اكتب المقاس ثم Enter'
+    set_status(msg)
   end
 
   def commit_segment(target, view)
     return if @points.empty? || !target
+    ensure_session!
     start = @points[-1]
     target = Geom::Point3d.new(target.x, target.y, 0)
     if target.distance(start) <= 0.5.cm
       return
     end
-    MHD_RoomBuilder_Context.wall_draw_add_segment(
+    inst = MHD_RoomBuilder_Context.wall_draw_add_segment(
       @group, start, target, @data['wall_h'].to_f, @data['wall_t'].to_f, @wall_number
     )
+    raise 'فشل إنشاء Geometry الحائط.' unless inst && inst.valid?
     @points << target
     @wall_number += 1
     @typed_length_cm = nil
@@ -1783,7 +1868,9 @@ class WallDrawTool
   end
 
   def save_points
-    @group.set_attribute(MHD_RoomBuilder_Context::DICT, 'wall_draw_points', @points.map { |p| MHD_RoomBuilder_Context.pt_to_s(p) }.to_json) if @group && @group.valid?
+    return unless @group && @group.valid?
+    @group.set_attribute(MHD_RoomBuilder_Context::DICT, 'wall_draw_points', @points.map { |p| MHD_RoomBuilder_Context.pt_to_s(p) }.to_json)
+  rescue
   end
 
   def close_polygon(view)
@@ -1792,15 +1879,16 @@ class WallDrawTool
     last = @points.last
     if last.distance(first) > 0.5.cm
       target = first
-      MHD_RoomBuilder_Context.wall_draw_add_segment(
-        @group, last, target, @data['wall_h'].to_f, @data['wall_t'].to_f, @wall_number
-      )
-      @points << first
+      commit_segment(target, view)
+      @points[-1] = first if @points.length > 1 && @points[-1].distance(first) <= 0.5.cm
     end
     if MHD_RoomBuilder_Context.finalize_wall_draw_session(self)
+      @active = false
       Sketchup.active_model.select_tool(nil)
     end
     view.invalidate if view
+  rescue => e
+    UI.messagebox("خطأ عند إغلاق الغرفة:\n#{e.class}: #{e.message}") rescue nil
   end
 
   def undo_last(view)
@@ -1809,12 +1897,13 @@ class WallDrawTool
       cancel_session
       return
     end
-    # Remove last created wall instance and step back one point.
-    walls = @group.entities.to_a.select do |e|
-      e.valid? && e.respond_to?(:get_attribute) && e.get_attribute(MHD_RoomBuilder_Context::DICT, 'النوع').to_s == 'حائط'
+    if @group && @group.valid?
+      walls = @group.entities.to_a.select do |e|
+        e.valid? && e.respond_to?(:get_attribute) && e.get_attribute(MHD_RoomBuilder_Context::DICT, 'النوع').to_s == 'حائط'
+      end
+      last_wall = walls.max_by { |e| e.get_attribute(MHD_RoomBuilder_Context::DICT, 'رقم الحائط').to_i }
+      last_wall.erase! if last_wall && last_wall.valid?
     end
-    last_wall = walls.max_by { |e| e.get_attribute(MHD_RoomBuilder_Context::DICT, 'رقم الحائط').to_i }
-    last_wall.erase! if last_wall && last_wall.valid?
     @points.pop
     @wall_number = [@wall_number - 1, 1].max
     @typed_length_cm = nil
@@ -1825,37 +1914,40 @@ class WallDrawTool
   end
 
   def cancel_session
-    if @group && @group.valid?
-      @group.erase!
-    end
+    MHD_RoomBuilder_Context.wall_draw_temporary_cleanup(@group)
+    @group = nil
+    @points = []
     @active = false
     Sketchup.active_model.select_tool(nil)
-    Sketchup.status_text = ''
+    set_status('')
   end
 end
 
 def activate_wall_draw_tool
   model = Sketchup.active_model
+  return false unless model && model.valid?
   begin
     data = wall_draw_setup_dialog
-    unless data
-      Sketchup.status_text = ts('تم إلغاء إعداد رسم الحوائط.')
-      return false
-    end
-    unless data.is_a?(Hash) && !data['room_name'].to_s.strip.empty?
-      raise TypeError, 'إعدادات رسم الحوائط غير مكتملة: اسم الغرفة مفقود.'
-    end
+    return false unless data.is_a?(Hash)
+    data = normalize_wall_draw_data(data)
     tool = WallDrawTool.new(data)
+    # مهم: الأداة الجديدة لا تنشئ Group ولا Tags أثناء select_tool.
+    # يتم إنشاء الجلسة فقط عند أول Click، لمنع TypeError الناتج من قيم SketchUp/Locale غير الجاهزة.
     model.select_tool(tool)
-    UI.start_timer(0.05, false) { Sketchup.status_text = ts('✅ أداة رسم الحوائط مفعلة — انقر نقطة البداية ثم حرّك الماوس.') }
+    UI.start_timer(0.05, false) do
+      begin
+        Sketchup.status_text = '✅ MHD: أداة رسم الحوائط مفعلة — كليك لنقطة البداية.'
+        model.active_view.invalidate
+      rescue
+      end
+    end
     true
   rescue => e
-    Sketchup.status_text = ''
-    UI.messagebox("خطأ في تشغيل أداة رسم الحوائط:\n#{e.class}: #{e.message}")
+    Sketchup.status_text = ''.to_s rescue nil
+    UI.messagebox("خطأ في تشغيل أداة رسم الحوائط:\n#{e.class}: #{e.message}\n\nجرّب مرة أخرى من قائمة Plugins.") rescue nil
     false
   end
 end
-
 
 # =========================================================
 # MHD SHATRA ENGINE V1 - Smart wall-corner calibration
