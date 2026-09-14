@@ -1,5 +1,5 @@
 # encoding: UTF-8
-# MHD Room Builder v4.0 - Smart Edit Engine
+# MHD Room Builder v25.0 - Line/Rectangle Build Workflow
 # SketchUp Ruby Plugin
 
 require 'sketchup.rb'
@@ -653,6 +653,52 @@ set_attrs(wall_inst, {
 end
 end
 
+
+def capture_floor_materials(room_group)
+  snap = { 'front' => nil, 'back' => nil }
+  return snap unless room_group && room_group.valid?
+  floor = room_group.entities.to_a.find do |e|
+    e.valid? && (e.is_a?(Sketchup::ComponentInstance) || e.is_a?(Sketchup::Group)) &&
+      e.get_attribute(DICT, 'النوع').to_s == 'أرضية'
+  end
+  return snap unless floor
+  faces = if floor.is_a?(Sketchup::ComponentInstance)
+            floor.definition.entities.grep(Sketchup::Face)
+          else
+            floor.entities.grep(Sketchup::Face)
+          end
+  top = faces.find { |f| f.valid? && f.normal.z > 0.9 } || faces.first
+  if top
+    snap['front'] = top.material
+    snap['back'] = top.back_material
+  end
+  snap
+rescue
+  { 'front' => nil, 'back' => nil }
+end
+
+def restore_floor_materials(room_group, snap)
+  return true unless room_group && room_group.valid? && snap.is_a?(Hash)
+  floor = room_group.entities.to_a.find do |e|
+    e.valid? && (e.is_a?(Sketchup::ComponentInstance) || e.is_a?(Sketchup::Group)) &&
+      e.get_attribute(DICT, 'النوع').to_s == 'أرضية'
+  end
+  return false unless floor
+  faces = if floor.is_a?(Sketchup::ComponentInstance)
+            floor.definition.entities.grep(Sketchup::Face)
+          else
+            floor.entities.grep(Sketchup::Face)
+          end
+  faces.each do |face|
+    next unless face.valid?
+    face.material = snap['front']
+    face.back_material = snap['back']
+  end
+  true
+rescue
+  false
+end
+
 def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, room_uuid)
   model = Sketchup.active_model
   delete_room_parts(room_group, 'أرضية')
@@ -1259,6 +1305,7 @@ def synchronize_room_geometry(room_group, pts, room_data)
   room_uuid = room_group.get_attribute(DICT, 'UUID').to_s
   room_uuid = uuid if room_uuid.empty?
   data = room_data || {}
+  floor_material_snapshot = capture_floor_materials(room_group)
   name = data['room_name'].to_s.strip
   name = ts('الغرفة') if name.empty?
   wall_h_cm = data['wall_h'].to_f
@@ -1286,6 +1333,7 @@ def synchronize_room_geometry(room_group, pts, room_data)
 
   rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid) if floor_on && floor_t_cm > 0
   normalize_room_floor_appearance(room_group) if respond_to?(:normalize_room_floor_appearance)
+  restore_floor_materials(room_group, floor_material_snapshot) if floor_on && floor_t_cm > 0
 
   if ceiling_on && ceil_t_cm > 0
     build_ceiling(model, room_group.entities, name, room_uuid, outward, pts,
@@ -1484,7 +1532,27 @@ updateBig();
 </body></html>
   HTML
   dlg.set_html(html)
-  dlg.add_action_callback('cancel') { dlg.close }
+  dlg.add_action_callback('cancel') do
+    restore_shatra_preview(room_group)
+    dlg.close
+  end
+  dlg.add_action_callback('preview') do |_, json|
+    begin
+      data = JSON.parse(json)
+      target_uuid = uuid0.to_s
+      apply_shatra_preview(room_group, corner_idx, data, target_uuid)
+    rescue => e
+      UI.messagebox("❌ خطأ في معاينة الشطرة:\n#{e.message}")
+    end
+  end
+  dlg.add_action_callback('preview') do |_, json|
+    begin
+      data = JSON.parse(json)
+      preview_shatra(room_group, corner_idx, data, uuid0.to_s)
+    rescue => e
+      UI.messagebox("❌ خطأ في معاينة الشطرة:\n#{e.message}")
+    end
+  end
   dlg.add_action_callback('submit') do |_, json|
     begin
       data = JSON.parse(json)
@@ -1616,13 +1684,13 @@ def create_wall_draw_session(data)
   end
   room_name = data['room_name'].to_s.strip
   room_uuid = uuid.to_s
-  group_name = "#{room_name} | #{ts('رسم حوائط مباشر').to_s}"
+  group_name = "#{room_name} | #{ts('رسم حوائط').to_s}"
   group.name = group_name
   room_tag = tag(model, room_name.to_s)
   group.layer = room_tag if room_tag
   set_attrs(group, {
     'UUID' => room_uuid,
-    'النوع' => 'رسم حوائط مباشر',
+    'النوع' => 'رسم حوائط',
     'اسم الغرفة' => room_name,
     'ارتفاع الحائط سم' => data['wall_h'].to_f,
     'سمك الحائط سم' => data['wall_t'].to_f,
@@ -1725,7 +1793,7 @@ class WallDrawTool
   def activate
     @active = true
     @group = nil
-    set_status('🧱 اضغط كليك لتحديد نقطة البداية ثم ارسم الحوائط مباشرة. الحائط يُنشأ فعليًا عند كل كليك.')
+    set_status('🧱 اضغط كليك لتحديد نقطة البداية. حرّك الماوس لرؤية الليزر والمقاس.')
     Sketchup.active_model.active_view.invalidate
   rescue => e
     @active = false
@@ -1744,8 +1812,32 @@ class WallDrawTool
   def draw(view)
     return unless @active
     begin
-      # Direct wall drawing preview — no laser.
-      # Committed walls are real SketchUp groups; preview is only the next wall footprint.
+      # ===== Premium live laser presentation =====
+      # Draw all committed segments as strong construction lines.
+      if @points.length >= 2
+        @points.each_cons(2).with_index do |(a, b), idx|
+          view.line_width = 4
+          view.drawing_color = Sketchup::Color.new(0, 210, 255)
+          view.draw(GL_LINES, [a, b])
+
+          # Wall-thickness preview edges (2D footprint) + centerline.
+          dir = a.vector_to(b)
+          if dir.length > 0.1.mm
+            dir.normalize!
+            perp = Geom::Vector3d.new(-dir.y, dir.x, 0)
+            perp.normalize!
+            half = (@data['wall_t'].to_f.cm / 2.0)
+            a1 = a.offset(perp, half)
+            a2 = a.offset(perp.reverse, half)
+            b1 = b.offset(perp, half)
+            b2 = b.offset(perp.reverse, half)
+            view.line_width = 2
+            view.drawing_color = Sketchup::Color.new(0, 150, 255)
+            view.draw(GL_LINE_LOOP, [a1, b1, b2, a2])
+          end
+        end
+      end
+
       if @points.length >= 1 && (@preview_point || @last_cursor_point)
         p1 = @points[-1]
         p2 = @preview_point || @last_cursor_point
@@ -1760,22 +1852,27 @@ class WallDrawTool
           b1 = p2.offset(perp, half)
           b2 = p2.offset(perp.reverse, half)
 
-          # Clean wall-footprint preview instead of a laser.
+          # Main laser centerline.
+          view.line_width = 5
+          view.drawing_color = Sketchup::Color.new(255, 40, 70)
+          view.draw(GL_LINES, [p1, p2])
+
+          # Preview wall footprint.
           view.line_width = 3
-          view.drawing_color = Sketchup::Color.new(255, 145, 0)
+          view.drawing_color = Sketchup::Color.new(255, 175, 0)
           view.draw(GL_LINE_LOOP, [a1, b1, b2, a2])
 
-          # Vertical corners preview for a clear 3D construction feel.
+          # Vertical wall preview sides: gives the user a 3D wall feel.
           h = @data['wall_h'].to_f.cm
           z1 = a1.offset(Z_AXIS, h)
           z2 = b1.offset(Z_AXIS, h)
           z3 = b2.offset(Z_AXIS, h)
           z4 = a2.offset(Z_AXIS, h)
           view.line_width = 2
-          view.drawing_color = Sketchup::Color.new(255, 180, 60)
+          view.drawing_color = Sketchup::Color.new(255, 110, 40)
           view.draw(GL_LINES, [a1, z1, b1, z2, b2, z3, a2, z4, z1, z2, z2, z3, z3, z4, z4, z1])
 
-          # Dynamic dimension text only.
+          # Dimension witness line offset from wall.
           offset = [@data['wall_t'].to_f.cm, 25.cm].max
           dim_a = p1.offset(perp, offset)
           dim_b = p2.offset(perp, offset)
@@ -1785,6 +1882,7 @@ class WallDrawTool
           tick = 6.cm
           view.draw(GL_LINES, [dim_a.offset(perp.reverse, tick), dim_a.offset(perp, tick), dim_b.offset(perp.reverse, tick), dim_b.offset(perp, tick)])
 
+          mid = Geom::Point3d.new((p1.x + p2.x) / 2.0, (p1.y + p2.y) / 2.0, 0)
           len_cm = p1.distance(p2).to_cm
           angle = segment_angle_deg(p1, p2)
           text = []
@@ -1798,7 +1896,7 @@ class WallDrawTool
         end
       end
 
-      # Clear point markers. Green = exact snap, cyan = alignment.
+      # Strong point markers.
       if @points.any?
         view.draw_points([@points.first], 12, 1, Sketchup::Color.new(0, 220, 255))
         view.draw_points([@points[-1]], 11, 1, Sketchup::Color.new(255, 180, 0))
@@ -1806,20 +1904,24 @@ class WallDrawTool
         view.draw_points([@last_cursor_point], 12, 1, Sketchup::Color.new(0, 220, 255))
       end
 
+      # Smart snap target marker: green = exact connection, cyan/yellow = alignment.
       if @snap_target
         marker_color = (@snap_type.to_s == 'نقطة اتصال' || @snap_type.to_s == 'نقطة حائط') ? Sketchup::Color.new(0, 255, 90) : Sketchup::Color.new(0, 220, 255)
         view.draw_points([@snap_target], 16, 2, marker_color)
-        view.draw_text(@snap_target.offset(Z_AXIS, 12.cm), "🧲 #{@snap_type}") if @snap_type
+        if @snap_type
+          view.draw_text(@snap_target.offset(Z_AXIS, 12.cm), "🧲 #{@snap_type}") rescue nil
+        end
       end
 
+      # Close hint when near the starting point.
       if @points.length >= 3 && @last_cursor_point && @last_cursor_point.distance(@points.first) <= 25.cm
         view.drawing_color = Sketchup::Color.new(0, 255, 120)
-        view.line_width = 4
+        view.line_width = 5
         view.draw(GL_LINES, [@points[-1], @points.first])
         view.draw_text(@points.first.offset(Z_AXIS, 18.cm), '⬤ اضغط هنا لإغلاق الغرفة')
       end
     rescue
-      # Keep the direct drawing tool alive if a transient preview call fails.
+      # Keep the preview tool alive even if SketchUp rejects a transient draw call.
     end
   end
 
@@ -2186,7 +2288,7 @@ def activate_wall_draw_tool_direct
     model.select_tool(tool)
     UI.start_timer(0.10, false) do
       begin
-        Sketchup.status_text = '🧱 MHD | رسم الحوائط المباشر جاهز: اضغط كليك لنقطة البداية ثم ابدأ الرسم.'
+        Sketchup.status_text = '🧱 MHD | الليزر جاهز: اضغط كليك لنقطة البداية ثم حرّك الماوس.'
         model.active_view.invalidate
       rescue
       end
@@ -2198,7 +2300,7 @@ def activate_wall_draw_tool_direct
   end
 end
 
-# مسار قديم للإعدادات محفوظ للتوافق الداخلي؛ الواجهة تستخدم الرسم المباشر فقط.
+# تشغيل الإعدادات اختياريًا ثم بدء الأداة
 def activate_wall_draw_tool
   model = Sketchup.active_model
   return false unless model && model.valid?
@@ -2210,7 +2312,7 @@ def activate_wall_draw_tool
     model.select_tool(tool)
     UI.start_timer(0.10, false) do
       begin
-        Sketchup.status_text = '🧱 MHD | رسم الحوائط المباشر جاهز: اضغط كليك لنقطة البداية ثم ابدأ الرسم.'
+        Sketchup.status_text = '🧱 MHD | الليزر جاهز: اضغط كليك لنقطة البداية ثم حرّك الماوس.'
         model.active_view.invalidate
       rescue
       end
@@ -2225,6 +2327,106 @@ end
 # =========================================================
 # MHD SHATRA ENGINE V1 - Smart wall-corner calibration
 # =========================================================
+
+def shatra_base_pts(room_group)
+  json = room_group.get_attribute(DICT, 'shatra_base_room_pts_json').to_s
+  return nil if json.empty?
+  data = JSON.parse(json) rescue nil
+  return nil unless data.is_a?(Array) && data.length >= 3
+  data.map { |a| Geom::Point3d.new(a[0].to_f, a[1].to_f, a[2].to_f) }
+rescue
+  nil
+end
+
+def save_shatra_base_pts(room_group, pts)
+  room_group.set_attribute(DICT, 'shatra_base_room_pts_json', pts.map { |p| [p.x.to_f, p.y.to_f, p.z.to_f] }.to_json)
+end
+
+def clear_shatra_base_pts(room_group)
+  room_group.delete_attribute(DICT, 'shatra_base_room_pts_json') rescue nil
+end
+
+def apply_shatras_to_points(base_pts, shatras)
+  result = base_pts.map(&:clone)
+  Array(shatras).sort_by { |s| s['corner_index'].to_i }.each do |s|
+    angle = s['angle_deg'].to_f
+    adjusted = shatra_adjust_corner_points(result, s['corner_index'].to_i, angle)
+    return nil unless adjusted && polygon_valid_for_wall_edit?(adjusted)
+    result = adjusted
+  end
+  result
+end
+
+def restore_natural_room_from_shatras(room_group, remaining_shatras)
+  base = shatra_base_pts(room_group)
+  return false unless base && base.length >= 3
+  data = build_data_from_group(room_group) || {}
+  target_pts = apply_shatras_to_points(base, remaining_shatras)
+  return false unless target_pts
+  synchronize_room_geometry(room_group, target_pts, data)
+  if remaining_shatras.empty?
+    clear_shatra_base_pts(room_group)
+  end
+  true
+end
+
+def shatra_preview_state_for(room_group)
+  @shatra_preview_states ||= {}
+  @shatra_preview_states[room_group.object_id]
+end
+
+def begin_shatra_preview(room_group)
+  @shatra_preview_states ||= {}
+  key = room_group.object_id
+  return if @shatra_preview_states[key]
+  @shatra_preview_states[key] = {
+    'pts' => (room_pts_from_group(room_group) || []).map(&:clone),
+    'data' => (build_data_from_group(room_group) || {}).dup,
+    'shatras' => shatras_from_room(room_group).map { |x| x.dup }
+  }
+end
+
+def restore_shatra_preview(room_group)
+  @shatra_preview_states ||= {}
+  state = @shatra_preview_states.delete(room_group.object_id)
+  return false unless state
+  synchronize_room_geometry(room_group, state['pts'], state['data'])
+  save_shatras(room_group, state['shatras'])
+  rebuild_all_shatras(room_group)
+  true
+rescue
+  false
+end
+
+def apply_shatra_preview(room_group, corner_idx, data, target_uuid = '')
+  begin_shatra_preview(room_group)
+  base_state = shatra_preview_state_for(room_group)
+  base_pts = shatra_base_pts(room_group) || base_state['pts'].map(&:clone)
+  existing = shatras_from_room(room_group)
+  candidate = existing.reject { |s| s['corner_index'].to_i == corner_idx.to_i || (!target_uuid.empty? && s['uuid'].to_s == target_uuid) }
+  candidate << {
+    'uuid' => (target_uuid.empty? ? 'preview' : target_uuid),
+    'corner_index' => corner_idx.to_i,
+    'a_cm' => data['a_cm'].to_f,
+    'b_cm' => data['b_cm'].to_f,
+    'diagonal_cm' => data['diagonal_cm'].to_f,
+    'angle_deg' => shatra_angle_from_sides(data['a_cm'], data['b_cm'], data['diagonal_cm']).to_f
+  }
+  new_pts = apply_shatras_to_points(base_pts, candidate.reject { |s| s['uuid'].to_s == 'preview' && target_uuid != '' })
+  # Include preview candidate last so the user sees the exact requested corner adjustment.
+  unless target_uuid.empty?
+    kept = existing.reject { |s| s['uuid'].to_s == target_uuid }
+  else
+    kept = existing.reject { |s| s['corner_index'].to_i == corner_idx.to_i }
+  end
+  preview_set = kept + [candidate.last]
+  new_pts = apply_shatras_to_points(base_pts, preview_set)
+  raise 'تعذر حساب معاينة الشطرة.' unless new_pts
+  synchronize_room_geometry(room_group, new_pts, base_state['data'])
+  rebuild_all_shatras(room_group)
+  true
+end
+
 def shatras_from_room(room_group)
   json = room_group.get_attribute(DICT, 'shatras_json').to_s
   return [] if json.empty?
@@ -2399,39 +2601,30 @@ def apply_shatra_calibration(room_group, corner_idx, data)
   b = data['b_cm'].to_f
   diag = data['diagonal_cm'].to_f
   angle = shatra_angle_from_sides(a, b, diag)
-
   unless angle
     UI.messagebox("❌ مقاسات الشطرة غير هندسية.\nلازم القطر يكون أكبر من |#{a} - #{b}| وأصغر من #{a + b}.")
     return false
   end
-
   pts = room_pts_from_group(room_group)
   unless pts && pts.length >= 3
     UI.messagebox('❌ لا يمكن قراءة نقاط الغرفة.')
     return false
   end
 
-  new_pts = shatra_adjust_corner_points(pts, corner_idx, angle)
-  unless new_pts && polygon_valid_for_wall_edit?(new_pts)
-    UI.messagebox('❌ التعديل سيؤدي إلى شكل غرفة غير صالح.')
-    return false
-  end
-
   model = Sketchup.active_model
   room_data = build_data_from_group(room_group) || {}
-  room_data = room_data.dup
-  old_pts = pts.map(&:clone)
   model.start_operation('MHD Smart Shatra Calibration', true)
   begin
-    remove_legacy_source_floor_geometry(old_pts)
-    # نبني كل Geometry مرة واحدة من النقاط الجديدة ثم نعيد رسم مرجع الشطرة.
-    rebuild_room_after_wall_edit(room_group, new_pts, room_data)
+    existing = shatras_from_room(room_group)
+    base = shatra_base_pts(room_group)
+    save_shatra_base_pts(room_group, pts) if existing.empty? || !base
+    base = shatra_base_pts(room_group) || pts.map(&:clone)
 
-    shatras = shatras_from_room(room_group)
     target_uuid = data['uuid'].to_s
-    previous = shatras.find { |s| !target_uuid.empty? && s['uuid'].to_s == target_uuid }
-    shatras.reject! { |s| s['corner_index'].to_i == corner_idx.to_i || (!target_uuid.empty? && s['uuid'].to_s == target_uuid) }
-    shatras << {
+    remaining = existing.reject do |s|
+      s['corner_index'].to_i == corner_idx.to_i || (!target_uuid.empty? && s['uuid'].to_s == target_uuid)
+    end
+    new_shatra = {
       'uuid' => (target_uuid.empty? ? uuid : target_uuid),
       'corner_index' => corner_idx.to_i,
       'a_cm' => a,
@@ -2439,8 +2632,14 @@ def apply_shatra_calibration(room_group, corner_idx, data)
       'diagonal_cm' => diag,
       'angle_deg' => angle
     }
-    save_shatras(room_group, shatras)
+    remaining << new_shatra
+    new_pts = apply_shatras_to_points(base, remaining)
+    raise 'التعديل سيؤدي إلى شكل غرفة غير صالح.' unless new_pts && polygon_valid_for_wall_edit?(new_pts)
+
+    synchronize_room_geometry(room_group, new_pts, room_data)
+    save_shatras(room_group, remaining)
     rebuild_all_shatras(room_group)
+    @shatra_preview_states.delete(room_group.object_id) if defined?(@shatra_preview_states) && @shatra_preview_states
 
     model.commit_operation
     model.active_view.invalidate
@@ -2466,11 +2665,23 @@ def delete_shatra(room_group, shatra_uuid)
   model = Sketchup.active_model
   model.start_operation('MHD Delete Shatra', true)
   begin
-    save_shatras(room_group, remaining)
-    rebuild_all_shatras(room_group)
+    base = shatra_base_pts(room_group)
+    if base
+      target_pts = apply_shatras_to_points(base, remaining)
+      raise 'تعذر استعادة هندسة الغرفة.' unless target_pts
+      data = build_data_from_group(room_group) || {}
+      synchronize_room_geometry(room_group, target_pts, data)
+      save_shatras(room_group, remaining)
+      rebuild_all_shatras(room_group)
+      clear_shatra_base_pts(room_group) if remaining.empty?
+    else
+      save_shatras(room_group, remaining)
+      rebuild_all_shatras(room_group)
+    end
+    @shatra_preview_states.delete(room_group.object_id) if defined?(@shatra_preview_states) && @shatra_preview_states
     model.commit_operation
     model.active_view.invalidate
-    UI.messagebox('✅ تم حذف الشطرة بنجاح')
+    UI.messagebox('✅ تم حذف الشطرة وإرجاع الحائط للوضع السابق بنجاح')
     true
   rescue => e
     model.abort_operation rescue nil
@@ -2549,11 +2760,11 @@ button{height:44px;border:0;border-radius:9px;font-weight:900;font-size:13px;cur
 
   <div class="footer">
     <button class="save" onclick="applyIt()">📐 تطبيق الشطرة</button>
-    <button class="close" onclick="sketchup.cancel()">إغلاق</button>
+    <button class="secondary" onclick="previewIt()">👁️ معاينة على الحائط</button>
   </div>
   <div class="footer3">
     <button class="secondary" onclick="refreshInfo()">🔄 تحديث المعلومات</button>
-    #{existing ? '<button class="danger" onclick="deleteIt()">🗑 حذف الشطرة</button><button class="secondary" onclick="sketchup.cancel()">✏️ إغلاق وحفظ لاحقاً</button>' : '<button class="secondary" onclick="sketchup.cancel()">✖ إلغاء</button><button class="secondary" onclick="sketchup.cancel()">ℹ️ معاينة فقط</button>'}
+    #{existing ? '<button class="danger" onclick="deleteIt()">🗑 حذف وإرجاع الحائط</button><button class="close" onclick="sketchup.cancel()">إغلاق بدون حفظ</button>' : '<button class="close" onclick="sketchup.cancel()">✖ إلغاء المعاينة</button><button class="secondary" onclick="sketchup.cancel()">إغلاق</button>'}
   </div>
 </div>
 <script>
@@ -2576,6 +2787,7 @@ function calc(){
 }
 ['a','b','c'].forEach(id=>document.getElementById(id).addEventListener('input',calc));
 function applyIt(){const d=calc();if(!d){alert('راجع المقاسات والقطر');return}sketchup.submit(JSON.stringify(d));}
+function previewIt(){const d=calc();if(!d){alert('راجع المقاسات والقطر');return}sketchup.preview(JSON.stringify(d));}
 function refreshInfo(){calc();}
 function deleteIt(){sketchup.delete_shatra('#{uuid0}');}
 calc();
@@ -2584,7 +2796,10 @@ calc();
   HTML
 
   dlg.set_html(html)
-  dlg.add_action_callback('cancel') { dlg.close }
+  dlg.add_action_callback('cancel') do
+    restore_shatra_preview(room_group)
+    dlg.close
+  end
   dlg.add_action_callback('submit') do |_, json|
     begin
       data = JSON.parse(json)
@@ -3801,6 +4016,7 @@ set_attrs(room_group, {
   'تاريخ الإنشاء' => Time.now.strftime('%Y-%m-%d %H:%M')
 })
 room_group.set_attribute(DICT, 'shatras_json', [].to_json)
+room_group.delete_attribute(DICT, 'shatra_base_room_pts_json') rescue nil
 room_group.set_attribute(DICT, 'beams_json', [].to_json)
 room_ents = room_group.entities
 if create_floor && floor_t > 0
@@ -3880,8 +4096,6 @@ selection = model.selection.to_a
     menu.add_item(ts(MENU_BUILD)) { build }
   end
 
-  menu.add_separator
-  menu.add_item(ts('🧱 بدء رسم الحوائط مباشرة')) { activate_wall_draw_tool_direct }
 
   # تعديل غرفة موجودة
   room_group = nil
@@ -3914,9 +4128,14 @@ selection = model.selection.to_a
   end
 end
 
-# قائمة Plugins للأداة التفاعلية
-UI.menu('Plugins').add_item(ts('MHD - بدء رسم الحوائط مباشرة')) do
-  activate_wall_draw_tool_direct
+# لا يتم تشغيل أداة رسم الحوائط التفاعلية؛ الرسم يتم من أدوات SketchUp Line / Rectangle ثم بناء الحوائط من الـFace المحدد.
+
+UI.menu('Plugins').add_item(ts('MHD - بناء الحوائط من Line / Rectangle')) do
+  if selected_face
+    build
+  else
+    UI.messagebox(ts('حدد Face من Line أو Rectangle أولاً'))
+  end
 end
 
 UI.menu('Plugins').add_item(ts('MHD - تعديل غرفة (نقر تفاعلي)')) do
