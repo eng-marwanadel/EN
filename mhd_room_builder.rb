@@ -594,7 +594,7 @@ def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, 
   delete_room_parts(room_group, 'أرضية')
   return if floor_t.to_f <= 0 || !outward_pts || outward_pts.length < 3
 
-  # إعادة بناء الأرضية من حدود الغرفة الحالية فقط، مع إسقاط جميع النقاط على منسوب Z=0
+  # الأرضية دائماً تُبنى من Room Geometry الحالية فقط وعلى Z=0.
   pts = outward_pts.map { |p| Geom::Point3d.new(p.x, p.y, 0) }
   return unless polygon_usable?(pts)
 
@@ -605,7 +605,23 @@ def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, 
   floor_face.reverse! if floor_face.normal.z < 0
   floor_face.pushpull(-floor_t)
 
-  # الأرضية سطح نظيف بدون خطوط محيط ظاهرة في المشهد.
+  # مادة مستقرة للأرضية حتى لا تتحول للون الأسود عند إعادة بناء الركن/الشطرة.
+  floor_mat_name = 'MHD Floor Neutral'
+  floor_mat = model.materials[floor_mat_name] || model.materials.add(floor_mat_name)
+  begin
+    floor_mat.color = Sketchup::Color.new(225, 225, 225)
+    floor_mat.alpha = 1.0 if floor_mat.respond_to?(:alpha=)
+  rescue
+  end
+  floor_def.entities.grep(Sketchup::Face).each do |face|
+    begin
+      face.material = floor_mat
+      face.back_material = floor_mat
+    rescue
+    end
+  end
+
+  # حواف الأرضية غير مرئية، مع إبقاء Geometry صالحة للتعديل.
   floor_def.entities.grep(Sketchup::Edge).each do |edge|
     begin
       edge.hidden = true if edge.respond_to?(:hidden=)
@@ -968,11 +984,17 @@ rescue
   false
 end
 
-def build_smart_wall_edit_points(room_group, wall_number, new_length_cm, anchor)
+def build_smart_wall_edit_points(room_group, wall_number, new_length_cm, anchor, mode = 'auto')
   pts = room_pts_from_group(room_group)
   return nil unless pts && pts.length >= 3
   idx = wall_number.to_i - 1
   return nil if idx < 0 || idx >= pts.length
+
+  # mode:
+  # single = عدّل الحائط المحدد فقط ولا تحرك الحائط المقابل
+  # opposite = حرّك الحائط المحدد ومعه المقابل للحفاظ على الاستقامة
+  # auto = السلوك الذكي التقليدي للغرف المستطيلة، مع fallback للـ single عند الحاجة
+  mode = mode.to_s
 
   if orthogonal_quadrilateral?(pts)
     j = (idx + 1) % 4
@@ -990,9 +1012,24 @@ def build_smart_wall_edit_points(room_group, wall_number, new_length_cm, anchor)
     delta = target - old_len
 
     result = pts.map { |p| p.clone }
+
+    # المستخدم يريد تعديل الحائط نفسه فقط: لا نحرك الحائط المقابل.
+    if mode == 'single'
+      case anchor.to_s
+      when 'end'
+        result[idx] = p2.offset(dir.reverse, delta)
+      when 'center'
+        half = delta / 2.0
+        result[idx] = p1.offset(dir.reverse, half)
+        result[j]   = p2.offset(dir, half)
+      else
+        result[j] = p1.offset(dir, target)
+      end
+      return result
+    end
+
     case anchor.to_s
     when 'end'
-      # ثبّت نهاية الحائط، وحرك بداية الحائط والنقطة المناظرة في الحائط المقابل.
       move = dir.reverse
       result[idx] = p2.offset(move, delta)
       result[opp_i] = pts[opp_i].offset(move, delta)
@@ -1003,7 +1040,6 @@ def build_smart_wall_edit_points(room_group, wall_number, new_length_cm, anchor)
       result[opp_i] = pts[opp_i].offset(dir.reverse, half)
       result[opp_j] = pts[opp_j].offset(dir, half)
     else
-      # ثبّت بداية الحائط، وحرك النهاية والنقطة المناظرة في الحائط المقابل بنفس المتجه.
       result[j] = p1.offset(dir, target)
       move_vec = p2.vector_to(result[j])
       result[opp_j] = pts[opp_j].offset(move_vec)
@@ -1070,7 +1106,9 @@ def shatra_result_text(a_cm, b_cm, diagonal_cm, angle_deg)
   cls = shatra_classification(angle_deg)
   right_diag = Math.sqrt(a_cm.to_f**2 + b_cm.to_f**2)
   diag_diff = diagonal_cm.to_f - right_diag
-  "الحالة: #{cls['status']}\nمقدار الشطف/الانحراف: #{cls['deviation'].round(2)}°\nالاتجاه: #{cls['direction']}\nالزاوية: #{angle_deg.round(2)}°\nقطر القائمة لنفس الضلعين: #{right_diag.round(2)} سم\nفرق القطر عن القائمة: #{diag_diff.round(2)} سم"
+  ref = [a_cm.to_f, b_cm.to_f].min
+  equivalent = Math.tan((cls['deviation'].to_f.abs) * Math::PI / 180.0) * ref
+  "الحالة: #{cls['status']}\nالنوع: #{cls['type']}\nالزاوية: #{angle_deg.round(2)}°\nالانحراف عن 90°: #{cls['deviation'].round(2)}°\nالاتجاه: #{cls['direction']}\nالمقاس الأول: #{a_cm.to_f.round(2)} سم\nالمقاس الثاني: #{b_cm.to_f.round(2)} سم\nالقطر المقاس: #{diagonal_cm.to_f.round(2)} سم\nقطر القائمة لنفس المقاسين: #{right_diag.round(2)} سم\nفرق القطر: #{diag_diff.round(2)} سم\nالشطف المكافئ على #{ref.round(2)} سم: #{equivalent.round(2)} سم"
 end
 
 def current_corner_angle(pts, corner_idx)
@@ -1198,6 +1236,8 @@ def apply_wall_edit(room_group, wall_number, data)
   new_height = data['height_cm'].to_f
   new_thickness = data['thickness_cm'].to_f
   anchor = data['anchor'].to_s
+  edit_mode = data['edit_mode'].to_s
+  edit_mode = 'auto' if edit_mode.empty?
   new_name = data['name'].to_s.strip
   new_name = rec['name'] if new_name.empty?
 
@@ -1215,7 +1255,7 @@ def apply_wall_edit(room_group, wall_number, data)
   room_data['wall_t'] = new_thickness
 
   old_pts = room_pts_from_group(room_group)
-  new_pts = build_smart_wall_edit_points(room_group, wall_number, new_length, anchor)
+  new_pts = build_smart_wall_edit_points(room_group, wall_number, new_length, anchor, edit_mode)
   unless new_pts && polygon_valid_for_wall_edit?(new_pts)
     UI.messagebox(ts('القيمة الجديدة أدت إلى شكل غرفة غير صالح. جرّب طولاً أكبر أو نقطة تثبيت مختلفة.'))
     return false
@@ -1305,10 +1345,11 @@ label{font-weight:900;font-size:13px}input,select{width:100%;height:34px;backgro
 <div class="big"><span id="length_big">#{v['length_cm']}</span> سم</div>
 <div class="row"><label>طول الحائط سم</label><div class="length-wrap"><button class="step" onclick="step(-1)">−</button><input id="length" type="number" step="0.1" min="1" value="#{v['length_cm']}" oninput="syncRange()"><button class="step" onclick="step(1)">+</button></div></div>
 <input id="length_range" class="range" type="range" min="1" max="2000" step="1" value="#{v['length_cm']}" oninput="syncInput()">
-<div class="hint">تقدر تزود أو تقلل طول الحائط، وتحدد نقطة التثبيت: بداية الحائط أو نهايته أو المنتصف.</div>
+<div class="hint">تقدر تزود أو تقلل طول الحائط، وتحدد نقطة التثبيت، وتختار هل التعديل يؤثر على الحائط المحدد فقط أم يحافظ على تماثل الغرفة.</div>
 </div>
 <div class="card">
 <div class="row"><label>نقطة التثبيت</label><select id="anchor"><option value="start">تثبيت بداية الحائط</option><option value="end">تثبيت نهاية الحائط</option><option value="center">تثبيت المنتصف</option></select></div>
+<div class="row"><label>نمط التعديل</label><select id="edit_mode"><option value="single">🎯 حائط واحد فقط — لا تحرك المقابل</option><option value="auto">🧠 ذكي — حافظ على استقامة الغرفة</option><option value="opposite">↔️ الحائط + المقابل معًا</option></select></div>
 <div class="row"><label>ارتفاع الحائط سم</label><input id="height" type="number" step="0.1" min="1" value="#{v['height_cm']}"></div>
 <div class="row"><label>سمك الحائط سم</label><input id="thickness" type="number" step="0.1" min="0.1" value="#{v['thickness_cm']}"></div>
 <div class="row"><label>اسم الحائط</label><input id="name" type="text" value="#{safe_name}"></div>
@@ -1322,7 +1363,7 @@ function syncRange(){let n=parseFloat(document.getElementById('length').value||1
 function syncInput(){document.getElementById('length').value=document.getElementById('length_range').value;updateBig();}
 function step(v){let n=parseFloat(document.getElementById('length').value||1);n=Math.max(1,n+v);document.getElementById('length').value=n;syncRange();}
 function submitData(){
- let data={length_cm:parseFloat(document.getElementById('length').value),height_cm:parseFloat(document.getElementById('height').value),thickness_cm:parseFloat(document.getElementById('thickness').value),name:document.getElementById('name').value,anchor:document.getElementById('anchor').value};
+ let data={length_cm:parseFloat(document.getElementById('length').value),height_cm:parseFloat(document.getElementById('height').value),thickness_cm:parseFloat(document.getElementById('thickness').value),name:document.getElementById('name').value,anchor:document.getElementById('anchor').value,edit_mode:document.getElementById('edit_mode').value};
  if(!Number.isFinite(data.length_cm)||!Number.isFinite(data.height_cm)||!Number.isFinite(data.thickness_cm)){alert('راجع المقاسات');return;}
  sketchup.submit(JSON.stringify(data));
 }
@@ -1367,6 +1408,422 @@ def activate_wall_edit_picker
   Sketchup.active_model.select_tool(WallEditPickTool.new)
 end
 
+
+
+
+# =========================================================
+# MHD WALL DRAW ENGINE V1 - Dynamic laser + live dimensions
+# =========================================================
+def wall_draw_defaults
+  d = saved_values rescue {}
+  {
+    'room_name' => d['room_name'].to_s.empty? ? ts('غرفة جديدة') : d['room_name'].to_s,
+    'wall_h' => (d['wall_h'].to_f > 0 ? d['wall_h'].to_f : 280.0),
+    'wall_t' => (d['wall_t'].to_f > 0 ? d['wall_t'].to_f : 10.0),
+    'floor_t' => (d['floor_t'].to_f >= 0 ? d['floor_t'].to_f : 10.0),
+    'ceil_t' => (d['ceil_t'].to_f >= 0 ? d['ceil_t'].to_f : 10.0),
+    'create_floor' => d.key?('create_floor') ? d['create_floor'] : 'yes',
+    'create_ceiling' => d.key?('create_ceiling') ? d['create_ceiling'] : 'no',
+    'ceiling_pattern' => d['ceiling_pattern'].to_s.empty? ? 'flat' : d['ceiling_pattern'].to_s,
+    'drop_reference' => d['drop_reference'].to_s.empty? ? 'below_wall' : d['drop_reference'].to_s
+  }
+end
+
+def wall_draw_setup_dialog
+  d = wall_draw_defaults
+  labels = [
+    ts('اسم الغرفة'), ts('ارتفاع الحائط سم'), ts('سمك الحائط سم'),
+    ts('سمك الأرضية سم'), ts('سمك السقف سم'), ts('إنشاء أرضية؟'), ts('إنشاء سقف؟')
+  ]
+  values = [
+    d['room_name'], d['wall_h'], d['wall_t'], d['floor_t'], d['ceil_t'],
+    d['create_floor'], d['create_ceiling']
+  ]
+  input = UI.inputbox(labels, values, nil, ts('MHD - إعداد رسم الحوائط'))
+  return nil unless input
+  room_name, wall_h, wall_t, floor_t, ceil_t, floor_on, ceiling_on = input
+  wall_h = wall_h.to_f
+  wall_t = wall_t.to_f
+  floor_t = floor_t.to_f
+  ceil_t = ceil_t.to_f
+  return nil if room_name.to_s.strip.empty? || wall_h <= 0 || wall_t <= 0
+  data = d.merge(
+    'room_name' => room_name.to_s.strip,
+    'wall_h' => wall_h,
+    'wall_t' => wall_t,
+    'floor_t' => floor_t,
+    'ceil_t' => ceil_t,
+    'create_floor' => enabled_value?(floor_on) ? 'yes' : floor_on.to_s,
+    'create_ceiling' => enabled_value?(ceiling_on) ? 'yes' : ceiling_on.to_s
+  )
+  save_values(data) rescue nil
+  data
+end
+
+def create_wall_draw_session(data)
+  model = Sketchup.active_model
+  group = model.active_entities.add_group
+  room_name = data['room_name'].to_s
+  room_uuid = uuid
+  group.name = "#{room_name} | #{ts('رسم حوائط')}"
+  group.layer = tag(model, room_name)
+  set_attrs(group, {
+    'UUID' => room_uuid,
+    'النوع' => 'رسم حوائط',
+    'اسم الغرفة' => room_name,
+    'ارتفاع الحائط سم' => data['wall_h'].to_f,
+    'سمك الحائط سم' => data['wall_t'].to_f,
+    'سمك الأرضية سم' => data['floor_t'].to_f,
+    'سمك السقف سم' => data['ceil_t'].to_f,
+    'إنشاء أرضية' => enabled_value?(data['create_floor']) ? 'نعم' : 'لا',
+    'إنشاء سقف' => enabled_value?(data['create_ceiling']) ? 'نعم' : 'لا',
+    'نمط السقف' => data['ceiling_pattern'].to_s,
+    'طريقة حساب السقوط' => data['drop_reference'].to_s,
+    'wall_draw_points' => [].to_json,
+    'shatras_json' => [].to_json,
+    'beams_json' => [].to_json
+  })
+  group
+end
+
+def wall_draw_add_segment(group, p1, p2, height_cm, thickness_cm, number)
+  model = Sketchup.active_model
+  return nil unless group && group.valid? && p1 && p2
+  vec = p1.vector_to(p2)
+  return nil if vec.length <= 0.1.mm
+  dir = vec.clone
+  dir.normalize!
+  perp = Geom::Vector3d.new(-dir.y, dir.x, 0)
+  perp.normalize!
+  half = thickness_cm.to_f.cm / 2.0
+  q1 = p1.offset(perp, half)
+  q2 = p2.offset(perp, half)
+  q3 = p2.offset(perp.reverse, half)
+  q4 = p1.offset(perp.reverse, half)
+  defn = model.definitions.add("MHD_DRAW_WALL_#{Time.now.to_f}_#{rand(1_000_000)}")
+  add_prism(defn.entities, q1, q2, q3, q4, 0, height_cm.to_f.cm)
+  inst = group.entities.add_instance(defn, Geom::Transformation.new)
+  name = format('%s %02d', ts('حائط'), number.to_i)
+  inst.name = name
+  inst.layer = tag(model, "#{group.get_attribute(DICT, 'اسم الغرفة')} | #{name}")
+  set_attrs(inst, {
+    'UUID' => uuid,
+    'Room_UUID' => group.get_attribute(DICT, 'UUID').to_s,
+    'النوع' => 'حائط',
+    'اسم الغرفة' => group.get_attribute(DICT, 'اسم الغرفة').to_s,
+    'رقم الحائط' => number.to_i,
+    'الاسم' => name,
+    'الارتفاع سم' => height_cm.to_f,
+    'السمك سم' => thickness_cm.to_f,
+    'طول الحائط سم' => p1.distance(p2).to_cm.round(2),
+    'P1' => pt_to_s(p1),
+    'P2' => pt_to_s(p2),
+    'رسم_تفاعلي' => 'نعم'
+  })
+  inst
+rescue
+  nil
+end
+
+def finalize_wall_draw_session(tool)
+  group = tool.instance_variable_get(:@group)
+  pts = tool.instance_variable_get(:@points)
+  data = tool.instance_variable_get(:@data)
+  return false unless group && group.valid? && pts && pts.length >= 3
+  pts = pts.map { |p| Geom::Point3d.new(p.x, p.y, 0) }
+  pts.pop if pts.length > 1 && pts[-1].distance(pts[0]) <= 0.1.cm
+  unless polygon_valid_for_wall_edit?(pts)
+    UI.messagebox(ts('شكل الحوائط غير صالح أو غير مغلق.'))
+    return false
+  end
+  model = Sketchup.active_model
+  model.start_operation('MHD Finish Wall Drawing', true)
+  begin
+    group.set_attribute(DICT, 'النوع', 'غرفة')
+    group.name = data['room_name'].to_s
+    room_uuid = group.get_attribute(DICT, 'UUID').to_s
+    save_room_pts(group, pts)
+    save_build_data(group, data)
+    group.set_attribute(DICT, 'shatras_json', [].to_json) if group.get_attribute(DICT, 'shatras_json').to_s.empty?
+    group.set_attribute(DICT, 'beams_json', [].to_json) if group.get_attribute(DICT, 'beams_json').to_s.empty?
+    synchronize_room_geometry(group, pts, data)
+    model.commit_operation
+    UI.messagebox("✅ #{ts('تم إنهاء رسم الحوائط بنجاح')}\n#{ts('عدد الحوائط')}: #{pts.length}")
+    true
+  rescue => e
+    model.abort_operation rescue nil
+    UI.messagebox("Error:\n#{e.message}")
+    false
+  end
+end
+
+class WallDrawTool
+  def initialize(data)
+    @data = data
+    @group = nil
+    @points = []
+    @preview_point = nil
+    @last_cursor_point = nil
+    @typed_length_cm = nil
+    @wall_number = 1
+    @ip = Sketchup::InputPoint.new
+    @active = false
+  end
+
+  def activate
+    @group = MHD_RoomBuilder_Context.create_wall_draw_session(@data)
+    @active = true
+    Sketchup.status_text = MHD_RoomBuilder_Context.ts('ابدأ بنقرة لتحديد بداية الحائط. حرّك الماوس، وسيظهر الليزر والمقاس، ثم انقر لإنشاء الحائط التالي.')
+  end
+
+  def deactivate(_view)
+    Sketchup.status_text = ''
+  end
+
+  def enableVCB?
+    true
+  end
+
+  def draw(view)
+    return unless @active
+    begin
+      view.line_width = 3
+      view.drawing_color = Sketchup::Color.new(255, 45, 45)
+      if @points.length >= 1 && (@preview_point || @last_cursor_point)
+        p1 = @points[-1]
+        p2 = @preview_point || @last_cursor_point
+        view.draw(GL_LINES, [p1, p2])
+
+        view.drawing_color = Sketchup::Color.new(255, 215, 0)
+        view.line_width = 2
+        tick = 8.cm
+        dir = p1.vector_to(p2)
+        if dir.length > 0.1.mm
+          dir.normalize!
+          perp = Geom::Vector3d.new(-dir.y, dir.x, 0)
+          perp.normalize!
+          mid = Geom::Point3d.new((p1.x + p2.x) / 2.0, (p1.y + p2.y) / 2.0, 0)
+          view.draw(GL_LINES, [mid.offset(perp, tick / 2.0), mid.offset(perp.reverse, tick / 2.0)])
+          len_cm = p1.distance(p2).to_cm
+          label = "#{MHD_RoomBuilder_Context.ts('حائط')} #{format('%02d', @wall_number)}\n#{MHD_RoomBuilder_Context.ts('الطول')}: #{len_cm.round(1)} سم"
+          view.draw_text(mid.offset(Z_AXIS, 8.cm), label)
+        end
+      end
+
+      if @points.length >= 1
+        view.drawing_color = Sketchup::Color.new(0, 190, 255)
+        view.draw_points([@points.first], 10, 1, Sketchup::Color.new(0, 190, 255))
+      end
+    rescue
+      # الرسم البصري لا يجب أن يعطل أداة إنشاء الحوائط.
+    end
+  end
+
+  def onMouseMove(_flags, x, y, view)
+    return unless @active
+    @ip.pick(view, x, y)
+    p = @ip.position
+    return unless p
+    p = Geom::Point3d.new(p.x, p.y, 0)
+    @last_cursor_point = p
+    if @points.empty?
+      @preview_point = p
+      view.invalidate
+      return
+    end
+    start = @points[-1]
+    vec = start.vector_to(p)
+    if vec.length > 0.1.mm
+      if @typed_length_cm && @typed_length_cm > 0
+        dir = vec.clone
+        dir.normalize!
+        @preview_point = start.offset(dir, @typed_length_cm.cm)
+      else
+        @preview_point = p
+      end
+    end
+    update_status
+    view.invalidate
+  end
+
+  def onLButtonDown(_flags, x, y, view)
+    return unless @active
+    @ip.pick(view, x, y)
+    p = @ip.position
+    return unless p
+    p = Geom::Point3d.new(p.x, p.y, 0)
+
+    if @points.empty?
+      @points << p
+      @preview_point = p
+      Sketchup.status_text = MHD_RoomBuilder_Context.ts('حائط 01: حرّك الماوس لتحديد الاتجاه والطول.')
+      view.invalidate
+      return
+    end
+
+    start = @points[-1]
+    target = @preview_point || p
+    if @points.length >= 3 && target.distance(@points.first) <= 10.cm
+      target = @points.first
+      commit_segment(target, view)
+      close_polygon(view)
+      return
+    end
+
+    commit_segment(target, view)
+  end
+
+  def onUserText(text, view)
+    return unless @active && !@points.empty?
+    value = text.to_s.tr(',', '.').to_f
+    return if value <= 0
+    @typed_length_cm = value
+    start = @points[-1]
+    cursor = @last_cursor_point || @preview_point
+    if start && cursor
+      vec = start.vector_to(cursor)
+      if vec.length > 0.1.mm
+        vec.normalize!
+        @preview_point = start.offset(vec, value.cm)
+      end
+    end
+    update_status
+    view.invalidate
+  end
+
+  def onKeyDown(key, _repeat, _flags, view)
+    case key
+    when 8
+      undo_last(view)
+    when 13
+      commit_segment(@preview_point || @last_cursor_point, view) unless @points.empty? || !(@preview_point || @last_cursor_point)
+    when 27
+      cancel_session
+    end
+  end
+
+  def onRButtonDown(_flags, _x, _y, _view)
+    menu = UI::Menu.new
+    menu.add_item(MHD_RoomBuilder_Context.ts('✅ إنهاء وإغلاق الغرفة')) do
+      close_polygon(nil)
+    end
+    menu.add_item(MHD_RoomBuilder_Context.ts('↩️ حذف آخر حائط')) do
+      undo_last(nil)
+    end
+    menu.add_separator
+    menu.add_item(MHD_RoomBuilder_Context.ts('❌ إلغاء الرسم')) do
+      cancel_session
+    end
+    menu.show
+  end
+
+  def onCancel(_reason, _view)
+    cancel_session
+  end
+
+  private
+
+  def update_status
+    return if @points.empty?
+    p = @preview_point || @last_cursor_point
+    return unless p
+    start = @points[-1]
+    len = start.distance(p).to_cm
+    wall_no = format('%02d', @wall_number)
+    angle = nil
+    if @points.length >= 2
+      prev = @points[-2]
+      a = prev.vector_to(start)
+      b = start.vector_to(p)
+      if a.length > 0.1.mm && b.length > 0.1.mm
+        a.normalize!
+        b.normalize!
+        dot = [[a.dot(b), -1.0].max, 1.0].min
+        angle = Math.acos(dot) * 180.0 / Math::PI
+      end
+    end
+    msg = "#{MHD_RoomBuilder_Context.ts('حائط')} #{wall_no} | #{MHD_RoomBuilder_Context.ts('الطول')}: #{len.round(1)} سم"
+    msg += " | #{MHD_RoomBuilder_Context.ts('زاوية الاتجاه')}: #{angle.round(1)}°" if angle
+    msg += " | #{MHD_RoomBuilder_Context.ts('اكتب المقاس مباشرة ثم Enter')}"
+    Sketchup.status_text = msg
+  end
+
+  def commit_segment(target, view)
+    return if @points.empty? || !target
+    start = @points[-1]
+    target = Geom::Point3d.new(target.x, target.y, 0)
+    if target.distance(start) <= 0.5.cm
+      return
+    end
+    MHD_RoomBuilder_Context.wall_draw_add_segment(
+      @group, start, target, @data['wall_h'].to_f, @data['wall_t'].to_f, @wall_number
+    )
+    @points << target
+    @wall_number += 1
+    @typed_length_cm = nil
+    @preview_point = target
+    save_points
+    update_status
+    view.invalidate if view
+  end
+
+  def save_points
+    @group.set_attribute(MHD_RoomBuilder_Context::DICT, 'wall_draw_points', @points.map { |p| MHD_RoomBuilder_Context.pt_to_s(p) }.to_json) if @group && @group.valid?
+  end
+
+  def close_polygon(view)
+    return if @points.length < 3
+    first = @points.first
+    last = @points.last
+    if last.distance(first) > 0.5.cm
+      target = first
+      MHD_RoomBuilder_Context.wall_draw_add_segment(
+        @group, last, target, @data['wall_h'].to_f, @data['wall_t'].to_f, @wall_number
+      )
+      @points << first
+    end
+    if MHD_RoomBuilder_Context.finalize_wall_draw_session(self)
+      Sketchup.active_model.select_tool(nil)
+    end
+    view.invalidate if view
+  end
+
+  def undo_last(view)
+    return if @points.empty?
+    if @points.length == 1
+      cancel_session
+      return
+    end
+    # Remove last created wall instance and step back one point.
+    walls = @group.entities.to_a.select do |e|
+      e.valid? && e.respond_to?(:get_attribute) && e.get_attribute(MHD_RoomBuilder_Context::DICT, 'النوع').to_s == 'حائط'
+    end
+    last_wall = walls.max_by { |e| e.get_attribute(MHD_RoomBuilder_Context::DICT, 'رقم الحائط').to_i }
+    last_wall.erase! if last_wall && last_wall.valid?
+    @points.pop
+    @wall_number = [@wall_number - 1, 1].max
+    @typed_length_cm = nil
+    @preview_point = @points.last
+    save_points
+    update_status
+    view.invalidate if view
+  end
+
+  def cancel_session
+    if @group && @group.valid?
+      @group.erase!
+    end
+    @active = false
+    Sketchup.active_model.select_tool(nil)
+    Sketchup.status_text = ''
+  end
+end
+
+def activate_wall_draw_tool
+  data = wall_draw_setup_dialog
+  return unless data
+  Sketchup.active_model.select_tool(WallDrawTool.new(data))
+end
 
 
 # =========================================================
@@ -1575,9 +2032,11 @@ def apply_shatra_calibration(room_group, corner_idx, data)
     rebuild_room_after_wall_edit(room_group, new_pts, room_data)
 
     shatras = shatras_from_room(room_group)
-    shatras.reject! { |s| s['corner_index'].to_i == corner_idx.to_i }
+    target_uuid = data['uuid'].to_s
+    previous = shatras.find { |s| !target_uuid.empty? && s['uuid'].to_s == target_uuid }
+    shatras.reject! { |s| s['corner_index'].to_i == corner_idx.to_i || (!target_uuid.empty? && s['uuid'].to_s == target_uuid) }
     shatras << {
-      'uuid' => uuid,
+      'uuid' => (target_uuid.empty? ? uuid : target_uuid),
       'corner_index' => corner_idx.to_i,
       'a_cm' => a,
       'b_cm' => b,
@@ -1598,19 +2057,55 @@ def apply_shatra_calibration(room_group, corner_idx, data)
   end
 end
 
-def open_shatra_dialog(room_group, corner_idx)
+def shatra_for_corner(room_group, corner_idx)
+  shatras_from_room(room_group).find { |s| s['corner_index'].to_i == corner_idx.to_i }
+end
+
+def delete_shatra(room_group, shatra_uuid)
+  return false unless room_group && room_group.valid?
+  uuid_to_delete = shatra_uuid.to_s
+  shatras = shatras_from_room(room_group)
+  remaining = shatras.reject { |s| s['uuid'].to_s == uuid_to_delete }
+  return false if remaining.length == shatras.length
+  model = Sketchup.active_model
+  model.start_operation('MHD Delete Shatra', true)
+  begin
+    save_shatras(room_group, remaining)
+    rebuild_all_shatras(room_group)
+    model.commit_operation
+    model.active_view.invalidate
+    UI.messagebox('✅ تم حذف الشطرة بنجاح')
+    true
+  rescue => e
+    model.abort_operation rescue nil
+    UI.messagebox("❌ خطأ أثناء حذف الشطرة:\n#{e.message}")
+    false
+  end
+end
+
+def open_shatra_dialog(room_group, corner_idx, existing = nil)
   pts = room_pts_from_group(room_group)
   return UI.messagebox('❌ لا توجد نقاط غرفة صالحة.') unless pts && pts.length >= 3
+
+  existing ||= shatra_for_corner(room_group, corner_idx)
+  current_angle = current_corner_angle(pts, corner_idx) || 90.0
+  existing_info = existing ? shatra_result_text(existing['a_cm'], existing['b_cm'], existing['diagonal_cm'], existing['angle_deg'].to_f) : nil
 
   dlg = UI::HtmlDialog.new(
     dialog_title: 'شطرة الحائط — MHDESIGN',
     preferences_key: PREF_KEY + '_SHATRA',
-    scrollable: false,
-    resizable: false,
-    width: 410,
-    height: 520,
+    scrollable: true,
+    resizable: true,
+    width: 450,
+    height: 700,
     style: UI::HtmlDialog::STYLE_DIALOG
   )
+
+  a0 = existing ? existing['a_cm'].to_f : 60.0
+  b0 = existing ? existing['b_cm'].to_f : 60.0
+  c0 = existing ? existing['diagonal_cm'].to_f : 85.0
+  uuid0 = existing ? existing['uuid'].to_s : ''
+  safe_info = (existing_info || "لا توجد شطرة محفوظة على هذا الركن.\nالزاوية الهندسية الحالية للركن: #{current_angle.round(2)}°").gsub('&','&amp;').gsub('<','&lt;').gsub('>','&gt;').gsub("\n", '<br>')
 
   html = <<-HTML
 <!DOCTYPE html>
@@ -1618,86 +2113,127 @@ def open_shatra_dialog(room_group, corner_idx)
 <head>
 <meta charset="UTF-8">
 <style>
-*{box-sizing:border-box}body{margin:0;background:#07131d;color:#eaf4f8;font-family:Arial,Tahoma,sans-serif}
-.app{padding:15px}.title{text-align:center;font-size:23px;font-weight:900}.sub{text-align:center;color:#8eabbc;font-size:12px;margin:5px 0 14px}
-.card{background:#0b1b27;border:1px solid #1c3342;border-radius:13px;padding:13px;margin-bottom:10px}
-.row{display:grid;grid-template-columns:170px 1fr;gap:9px;align-items:center;margin-bottom:10px}
-label{font-weight:900;font-size:13px}input{width:100%;height:38px;background:#111f2a;color:#fff;border:1px solid #294457;border-radius:8px;text-align:center;font-size:15px}
-.result{text-align:center;font-size:25px;font-weight:900;padding:12px;border-radius:10px;background:#102b3b}
-.hint{font-size:11px;color:#8eabbc;line-height:1.65}.footer{display:flex;gap:8px;margin-top:12px}
-button{flex:1;height:44px;border:0;border-radius:9px;font-weight:900;font-size:14px;cursor:pointer}
-.save{background:#4de37a;color:#061923}.close{background:#0b1b27;color:#fff;border:1px solid #294457}
+*{box-sizing:border-box}html,body{margin:0;padding:0;background:#07131d;color:#eaf4f8;font-family:Arial,Tahoma,sans-serif;overflow:auto}
+.app{padding:16px;min-height:100vh}.title{text-align:center;font-size:24px;font-weight:900}.sub{text-align:center;color:#8eabbc;font-size:12px;margin:5px 0 14px}
+.card{background:#0b1b27;border:1px solid #1c3342;border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 4px 18px rgba(0,0,0,.18)}
+.row{display:grid;grid-template-columns:180px 1fr;gap:9px;align-items:center;margin-bottom:10px}label{font-weight:900;font-size:13px}
+input{width:100%;height:40px;background:#111f2a;color:#fff;border:1px solid #294457;border-radius:9px;text-align:center;font-size:15px;padding:0 8px}
+.result{background:#102b3b;border:1px solid #26495d;border-radius:11px;padding:13px;text-align:center;font-size:25px;font-weight:900}.state{font-size:14px;margin-top:8px;line-height:1.8}
+.info{font-size:12px;color:#b4cbd7;line-height:1.8;background:#091923;border-radius:10px;padding:10px}.hint{font-size:11px;color:#8eabbc;line-height:1.7}
+.footer{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}.footer3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px}
+button{height:44px;border:0;border-radius:9px;font-weight:900;font-size:13px;cursor:pointer}.save{background:#4de37a;color:#061923}.close{background:#0b1b27;color:#fff;border:1px solid #294457}.danger{background:#d9534f;color:#fff}.secondary{background:#123044;color:#fff;border:1px solid #294457}
+.badge{display:inline-block;background:#17384a;color:#cfe9f6;padding:4px 10px;border-radius:999px;font-size:11px;margin-top:6px}
 </style>
 </head>
 <body>
 <div class="app">
-<div class="title">📐 شطرة الحائط</div>
-<div class="sub">قياس ذكي لزاوية الركن من مقاسين وقطر واحد</div>
-<div class="card">
-<div class="row"><label>المقاس الأول من الركن سم</label><input id="a" type="number" min="0.1" step="0.1" value="60"></div>
-<div class="row"><label>المقاس الثاني من الركن سم</label><input id="b" type="number" min="0.1" step="0.1" value="60"></div>
-<div class="row"><label>القطر بين النقطتين سم</label><input id="c" type="number" min="0.1" step="0.1" value="85"></div>
-</div>
-<div class="card">
-<div class="result">الزاوية: <span id="angle">—</span>°<br><span id="state" style="font-size:14px;display:inline-block;margin-top:7px">الحالة: —</span><br><span id="deviation" style="font-size:13px;display:inline-block;margin-top:4px">الشطف: —</span></div>
-<div class="hint">مثال: 60 سم + 60 سم + قطر 85 سم ⇒ الزاوية حوالي 90.20°. عند التطبيق يتم تعديل اتجاه الحائطين حول الركن مع الحفاظ على أطوالهما الحالية.</div>
-</div>
-<div class="card">
-<div class="hint">بعد التطبيق يعاد بناء الحوائط والأرضية والسقف والكمرات المرتبطة، ويتم وضع خط الشطرة كمرجع بصري واضح على الركن.</div>
-</div>
-<div class="footer"><button class="save" onclick="applyIt()">📐 ضبط الحائط بالشطرة</button><button class="close" onclick="sketchup.cancel()">إغلاق</button></div>
+  <div class="title">📐 شطرة الحائط</div>
+  <div class="sub">شطرة ذكية مرتبطة مباشرة بالركن والحائط والغرفة</div>
+
+  <div class="card">
+    <div class="row"><label>المقاس الأول من الركن (سم)</label><input id="a" type="number" min="0.1" step="0.1" value="#{a0}"></div>
+    <div class="row"><label>المقاس الثاني من الركن (سم)</label><input id="b" type="number" min="0.1" step="0.1" value="#{b0}"></div>
+    <div class="row"><label>القطر بين النقطتين (سم)</label><input id="c" type="number" min="0.1" step="0.1" value="#{c0}"></div>
+  </div>
+
+  <div class="card">
+    <div class="result">الزاوية: <span id="angle">—</span>°
+      <div class="state"><span id="state">الحالة: —</span><br><span id="dev">الانحراف: —</span><br><span id="eq">الشطف المكافئ: —</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="badge">معلومات الشطرة الحالية</div>
+    <div id="info" class="info">#{safe_info}</div>
+  </div>
+
+  <div class="card">
+    <div class="hint">اكتب المقاسين والقطر، وسيتم حساب الزاوية تلقائياً. بعد التطبيق يتم إعادة بناء الحوائط والأرضية والسقف والكمرات والشطرات المرتبطة من نفس Room Geometry، بدون ترك Geometry قديمة.</div>
+  </div>
+
+  <div class="footer">
+    <button class="save" onclick="applyIt()">📐 تطبيق الشطرة</button>
+    <button class="close" onclick="sketchup.cancel()">إغلاق</button>
+  </div>
+  <div class="footer3">
+    <button class="secondary" onclick="refreshInfo()">🔄 تحديث المعلومات</button>
+    #{existing ? '<button class="danger" onclick="deleteIt()">🗑 حذف الشطرة</button><button class="secondary" onclick="sketchup.cancel()">✏️ إغلاق وحفظ لاحقاً</button>' : '<button class="secondary" onclick="sketchup.cancel()">✖ إلغاء</button><button class="secondary" onclick="sketchup.cancel()">ℹ️ معاينة فقط</button>'}
+  </div>
 </div>
 <script>
+function fmt(v){return Number(v).toFixed(2)}
 function calc(){
  const a=parseFloat(document.getElementById('a').value),b=parseFloat(document.getElementById('b').value),c=parseFloat(document.getElementById('c').value);
  if(!(a>0&&b>0&&c>0)){document.getElementById('angle').textContent='—';return null}
  const x=(a*a+b*b-c*c)/(2*a*b);
- if(x<-1||x>1){document.getElementById('angle').textContent='غير صالح';return null}
+ if(x<-1||x>1){document.getElementById('angle').textContent='غير صالح';document.getElementById('state').textContent='الحالة: قطر غير هندسي';return null}
  const deg=Math.acos(Math.max(-1,Math.min(1,x)))*180/Math.PI;
- const dev=Math.abs(deg-90);
- let state='قائمة 90°';
- if(dev>0.1) state='مشطولة ' + (deg>90 ? '(مفتوحة)' : '(مقفولة)');
- document.getElementById('angle').textContent=deg.toFixed(2);
+ const dev=Math.abs(deg-90); let state=dev<=0.10?'قائمة تقريباً 90°':'مشطولة '+(deg>90?'(مفتوحة)':'(مقفولة)');
+ const eq=Math.tan(dev*Math.PI/180)*Math.min(a,b);
+ const rd=Math.sqrt(a*a+b*b), diff=c-rd;
+ document.getElementById('angle').textContent=fmt(deg);
  document.getElementById('state').textContent='الحالة: '+state;
- document.getElementById('deviation').textContent='الشطف/الانحراف عن 90°: '+dev.toFixed(2)+'°';
+ document.getElementById('dev').textContent='الانحراف عن 90°: '+fmt(dev)+'°';
+ document.getElementById('eq').textContent='الشطف المكافئ على '+fmt(Math.min(a,b))+' سم: '+fmt(eq)+' سم';
+ document.getElementById('info').innerHTML='المقاس الأول: '+fmt(a)+' سم<br>المقاس الثاني: '+fmt(b)+' سم<br>القطر: '+fmt(c)+' سم<br>قطر القائمة المقارن: '+fmt(rd)+' سم<br>فرق القطر: '+fmt(diff)+' سم';
  return {a_cm:a,b_cm:b,diagonal_cm:c};
 }
 ['a','b','c'].forEach(id=>document.getElementById(id).addEventListener('input',calc));
-function applyIt(){
- const d=calc(); if(!d){alert('راجع المقاسات والقطر');return}
- sketchup.submit(JSON.stringify(d));
-}
+function applyIt(){const d=calc();if(!d){alert('راجع المقاسات والقطر');return}sketchup.submit(JSON.stringify(d));}
+function refreshInfo(){calc();}
+function deleteIt(){sketchup.delete_shatra('#{uuid0}');}
 calc();
 </script>
-</body>
-</html>
-HTML
+</body></html>
+  HTML
+
   dlg.set_html(html)
   dlg.add_action_callback('cancel') { dlg.close }
   dlg.add_action_callback('submit') do |_, json|
     begin
       data = JSON.parse(json)
       dlg.close
+      data['uuid'] = uuid0 unless uuid0.to_s.empty?
       apply_shatra_calibration(room_group, corner_idx, data)
     rescue => e
       UI.messagebox("❌ #{e.message}")
     end
+  end
+  dlg.add_action_callback('delete_shatra') do |_, uid|
+    dlg.close
+    delete_shatra(room_group, uid)
   end
   dlg.show
 end
 
 class ShatraPickTool
   def activate
-    Sketchup.status_text = MHD_RoomBuilder_Context.ts('شطرة الحائط: اضغط على ركن أو قرب نهاية حائط لتحديد الزاوية')
+    Sketchup.status_text = MHD_RoomBuilder_Context.ts('شطرة الحائط: اضغط على شطرة موجودة لتعديلها/حذفها، أو على حائط لإضافة/قياس شطرة')
   end
 
   def onLButtonDown(_flags, x, y, view)
     ph = view.pick_helper
     ph.do_pick(x, y)
     ent = ph.best_picked
+
+    # 1) لو ضغط المستخدم على شطرة موجودة: افتح بياناتها مباشرة.
+    if ent && ent.respond_to?(:get_attribute)
+      kind = ent.get_attribute(MHD_RoomBuilder_Context::DICT, 'النوع').to_s
+      if kind == 'شطرة حائط'
+        room = MHD_RoomBuilder_Context.find_room_group(ent)
+        uid = ent.get_attribute(MHD_RoomBuilder_Context::DICT, 'UUID').to_s
+        sh = room ? MHD_RoomBuilder_Context.shatras_from_room(room).find { |s| s['uuid'].to_s == uid } : nil
+        if room && sh
+          MHD_RoomBuilder_Context.open_shatra_dialog(room, sh['corner_index'].to_i, sh)
+          return
+        end
+      end
+    end
+
+    # 2) أو اضغط على حائط/عنصر داخل غرفة.
     room = MHD_RoomBuilder_Context.find_room_group(ent)
     unless room
-      UI.messagebox(MHD_RoomBuilder_Context.ts('اضغط على حائط أو عنصر داخل غرفة MHD.'))
+      UI.messagebox(MHD_RoomBuilder_Context.ts('اضغط على حائط أو شطرة داخل غرفة MHD.'))
       return
     end
 
@@ -1707,27 +2243,25 @@ class ShatraPickTool
       (ent && ent.respond_to?(:bounds) ? ent.bounds.center : nil)
     end
 
-    # لو المستخدم ضغط على حائط، حدد أقرب طرف فعلي للحائط، ثم حوّله إلى فهرس الركن في بيانات الغرفة.
     corner_idx = nil
     if ent && ent.respond_to?(:get_attribute) && ent.get_attribute(MHD_RoomBuilder_Context::DICT, 'النوع').to_s == 'حائط'
       p1s = ent.get_attribute(MHD_RoomBuilder_Context::DICT, 'P1').to_s.split('|').map(&:to_f)
       p2s = ent.get_attribute(MHD_RoomBuilder_Context::DICT, 'P2').to_s.split('|').map(&:to_f)
       if p1s.length >= 3 && p2s.length >= 3
-        p1 = Geom::Point3d.new(*p1s[0,3])
-        p2 = Geom::Point3d.new(*p2s[0,3])
+        p1 = Geom::Point3d.new(*p1s[0,3]); p2 = Geom::Point3d.new(*p2s[0,3])
         cp = click_pt || ent.bounds.center
         picked_point = cp.distance(p1) <= cp.distance(p2) ? p1 : p2
         corner_idx = MHD_RoomBuilder_Context.shatra_corner_index(room, picked_point)
       end
     end
-
     corner_idx ||= MHD_RoomBuilder_Context.shatra_corner_index(room, click_pt || Geom::Point3d.new(0,0,0))
     unless corner_idx
       UI.messagebox('❌ تعذر تحديد ركن.')
       return
     end
 
-    MHD_RoomBuilder_Context.open_shatra_dialog(room, corner_idx)
+    existing = MHD_RoomBuilder_Context.shatra_for_corner(room, corner_idx)
+    MHD_RoomBuilder_Context.open_shatra_dialog(room, corner_idx, existing)
   rescue => e
     UI.messagebox("❌ خطأ في أداة الشطرة:\n#{e.message}")
   end
@@ -2946,6 +3480,9 @@ selection = model.selection.to_a
     menu.add_item(ts(MENU_BUILD)) { build }
   end
 
+  menu.add_separator
+  menu.add_item(ts('🧱 رسم حوائط ديناميكي')) { activate_wall_draw_tool }
+
   # تعديل غرفة موجودة
   room_group = nil
   selection.each do |entity|
@@ -2955,7 +3492,7 @@ selection = model.selection.to_a
 
   if room_group
     menu.add_separator
-    menu.add_item(ts('⚙️ تعديل المـــطبـــخ')) { open_edit_room_dialog(room_group) }
+    menu.add_item(ts('⚙️ تعديل المـــطبــخ')) { open_edit_room_dialog(room_group) }
 
     # كمر: يظهر عند تحديد حائط أو كمر
     wall_entity = selection.find do |entity|
@@ -2978,6 +3515,10 @@ selection = model.selection.to_a
 end
 
 # قائمة Plugins للأداة التفاعلية
+UI.menu('Plugins').add_item(ts('MHD - رسم حوائط ديناميكي (ليزر + أبعاد)')) do
+  activate_wall_draw_tool
+end
+
 UI.menu('Plugins').add_item(ts('MHD - تعديل غرفة (نقر تفاعلي)')) do
   activate_room_edit_picker
 end
