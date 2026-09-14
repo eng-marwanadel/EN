@@ -1923,6 +1923,28 @@ class WallDrawTool
   end
 end
 
+def activate_wall_draw_tool_direct
+  model = Sketchup.active_model
+  return false unless model && model.valid?
+  begin
+    data = normalize_wall_draw_data(wall_draw_defaults)
+    tool = WallDrawTool.new(data)
+    model.select_tool(tool)
+    UI.start_timer(0.10, false) do
+      begin
+        Sketchup.status_text = '🧱 MHD | الليزر جاهز: اضغط كليك لنقطة البداية ثم حرّك الماوس.'
+        model.active_view.invalidate
+      rescue
+      end
+    end
+    true
+  rescue => e
+    UI.messagebox("خطأ في بدء رسم الحوائط:\n#{e.class}: #{e.message}\n\nالقيم الافتراضية لم يتم إنشاؤها أو تشغيل أداة SketchUp.") rescue nil
+    false
+  end
+end
+
+# تشغيل الإعدادات اختياريًا ثم بدء الأداة
 def activate_wall_draw_tool
   model = Sketchup.active_model
   return false unless model && model.valid?
@@ -1931,20 +1953,17 @@ def activate_wall_draw_tool
     return false unless data.is_a?(Hash)
     data = normalize_wall_draw_data(data)
     tool = WallDrawTool.new(data)
-    # مهم: الأداة الجديدة لا تنشئ Group ولا Tags أثناء select_tool.
-    # يتم إنشاء الجلسة فقط عند أول Click، لمنع TypeError الناتج من قيم SketchUp/Locale غير الجاهزة.
     model.select_tool(tool)
-    UI.start_timer(0.05, false) do
+    UI.start_timer(0.10, false) do
       begin
-        Sketchup.status_text = '✅ MHD: أداة رسم الحوائط مفعلة — كليك لنقطة البداية.'
+        Sketchup.status_text = '🧱 MHD | الليزر جاهز: اضغط كليك لنقطة البداية ثم حرّك الماوس.'
         model.active_view.invalidate
       rescue
       end
     end
     true
   rescue => e
-    Sketchup.status_text = ''.to_s rescue nil
-    UI.messagebox("خطأ في تشغيل أداة رسم الحوائط:\n#{e.class}: #{e.message}\n\nجرّب مرة أخرى من قائمة Plugins.") rescue nil
+    UI.messagebox("خطأ في تشغيل أداة رسم الحوائط:\n#{e.class}: #{e.message}") rescue nil
     false
   end
 end
@@ -3639,15 +3658,11 @@ end
 
 # قائمة Plugins للأداة التفاعلية
 UI.menu('Plugins').add_item(ts('MHD - رسم حوائط ديناميكي (ليزر + أبعاد)')) do
-  activate_wall_draw_tool
+  activate_wall_draw_tool_direct
 end
 
 UI.menu('Plugins').add_item(ts('MHD - بدء رسم الحوائط مباشرة')) do
-  begin
-    activate_wall_draw_tool
-  rescue => e
-    UI.messagebox("خطأ في بدء رسم الحوائط:\n#{e.class}: #{e.message}")
-  end
+  activate_wall_draw_tool_direct
 end
 
 UI.menu('Plugins').add_item(ts('MHD - تعديل غرفة (نقر تفاعلي)')) do
