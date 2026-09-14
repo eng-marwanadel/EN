@@ -2655,6 +2655,734 @@ end
 # END SMART ROOM EDIT ENGINE V5
 # =========================================================
 
+
+# =========================================================
+# MHD DIMENSION VALIDATOR - INTEGRATED ENGINE
+# =========================================================
+
+VALIDATOR_PREF_KEY = "#{PREF_KEY}_DIMENSION_VALIDATOR"
+VALIDATOR_POLL_MS = 650
+
+def validator_length_cm(value)
+  value.to_f.to_cm
+rescue
+  0.0
+end
+
+def validator_entity_type(entity)
+  return '' unless entity && entity.respond_to?(:get_attribute)
+  entity.get_attribute(DICT, 'النوع').to_s
+rescue
+  ''
+end
+
+def validator_structural?(entity)
+  type = validator_entity_type(entity)
+  return true if %w[غرفة حائط أرضية سقف كمر شطرة مرجع\ حائط].include?(type)
+  name = (entity.name.to_s rescue '').downcase
+  layer_name = (entity.layer.name.to_s rescue '').downcase
+  structural_words = %w[
+    wall walls floor ceiling beam shatra reference
+    حائط حوائط أرضية سقف كمر شطرة مرجع
+  ]
+  structural_words.any? { |w| name.include?(w) || layer_name.include?(w) }
+rescue
+  false
+end
+
+def validator_hidden?(entity)
+  return true if entity.respond_to?(:hidden?) && entity.hidden?
+  return true if entity.respond_to?(:visible?) && !entity.visible?
+  false
+rescue
+  false
+end
+
+def validator_world_bbox_points(entity)
+  # SketchUp DrawingElement#bounds is already reported in model/world coordinates
+  # for Group/ComponentInstance, so applying the instance transformation again
+  # would double-transform rotated/translated components.
+  bb = entity.bounds
+  return [] unless bb && bb.valid? && bb.corner(0)
+  (0...8).map { |i| bb.corner(i) }
+rescue
+  []
+end
+
+def validator_entity_center(entity)
+  pts = validator_world_bbox_points(entity)
+  return nil if pts.empty?
+  xs = pts.map(&:x)
+  ys = pts.map(&:y)
+  zs = pts.map(&:z)
+  Geom::Point3d.new(
+    (xs.min + xs.max) / 2.0,
+    (ys.min + ys.max) / 2.0,
+    (zs.min + zs.max) / 2.0
+  )
+rescue
+  nil
+end
+
+def validator_bbox_dimensions(entity)
+  pts = validator_world_bbox_points(entity)
+  return [0.0, 0.0, 0.0] if pts.empty?
+  xs = pts.map(&:x)
+  ys = pts.map(&:y)
+  zs = pts.map(&:z)
+  [
+    (xs.max - xs.min).abs.to_cm,
+    (ys.max - ys.min).abs.to_cm,
+    (zs.max - zs.min).abs.to_cm
+  ]
+rescue
+  [0.0, 0.0, 0.0]
+end
+
+def validator_uuid(entity)
+  return '' unless entity && entity.respond_to?(:get_attribute)
+  entity.get_attribute(DICT, 'UUID').to_s
+rescue
+  ''
+end
+
+def validator_wall_number_from_entity(entity)
+  return nil unless entity && entity.respond_to?(:get_attribute)
+  keys = ['رقم الحائط', 'wall_number', 'Wall_Number', 'WallNumber']
+  keys.each do |key|
+    value = entity.get_attribute(DICT, key)
+    return value.to_i if value && value.to_i > 0
+  end
+  nil
+rescue
+  nil
+end
+
+def validator_numeric_attr(entity, keys)
+  return nil unless entity && entity.respond_to?(:get_attribute)
+  keys.each do |key|
+    value = entity.get_attribute(DICT, key)
+    next if value.nil? || value.to_s.strip.empty?
+    n = value.to_f
+    return n if n > 0
+  end
+  nil
+rescue
+  nil
+end
+
+def validator_item_name(entity)
+  name = (entity.name.to_s.strip rescue '')
+  return name unless name.empty?
+  layer_name = (entity.layer.name.to_s.strip rescue '')
+  return layer_name unless layer_name.empty?
+  validator_entity_type(entity).to_s
+end
+
+def validator_opening?(entity)
+  text = [
+    validator_entity_type(entity),
+    (entity.name.to_s rescue ''),
+    (entity.layer.name.to_s rescue '')
+  ].join(' ').downcase
+  %w[
+    باب door doors
+    شباك نافذة window windows
+    فتحة opening openings
+  ].any? { |w| text.include?(w) }
+rescue
+  false
+end
+
+def validator_candidate_entity?(entity)
+  return false unless entity && entity.valid?
+  return false if validator_hidden?(entity)
+  return false if validator_structural?(entity)
+  return false unless entity.is_a?(Sketchup::Group) || entity.is_a?(Sketchup::ComponentInstance)
+  return false if validator_entity_type(entity) == 'غرفة'
+  true
+rescue
+  false
+end
+
+def validator_wall_segment_distance_cm(point, p1, p2)
+  dx = p2.x - p1.x
+  dy = p2.y - p1.y
+  len2 = dx * dx + dy * dy
+  return 0.0 if len2 <= 0.0000001
+  t = ((point.x - p1.x) * dx + (point.y - p1.y) * dy) / len2
+  t = 0.0 if t < 0.0
+  t = 1.0 if t > 1.0
+  qx = p1.x + t * dx
+  qy = p1.y + t * dy
+  Math.sqrt((point.x - qx) ** 2 + (point.y - qy) ** 2).to_cm
+rescue
+  999999.0
+end
+
+def validator_projection_length_cm(entity, p1, p2)
+  pts = validator_world_bbox_points(entity)
+  return 0.0 if pts.empty?
+  dx = p2.x - p1.x
+  dy = p2.y - p1.y
+  len = Math.sqrt(dx * dx + dy * dy)
+  return 0.0 if len <= 0.000001
+  ux = dx / len
+  uy = dy / len
+  vals = pts.map { |p| p.x * ux + p.y * uy }
+  (vals.max - vals.min).abs.to_cm
+rescue
+  dims = validator_bbox_dimensions(entity)
+  [dims[0], dims[1]].max
+end
+
+def validator_entity_z_range_cm(entity)
+  pts = validator_world_bbox_points(entity)
+  return [0.0, 0.0] if pts.empty?
+  zs = pts.map(&:z)
+  [zs.min.to_cm, zs.max.to_cm]
+rescue
+  [0.0, 0.0]
+end
+
+def validator_find_wall(room_group, number)
+  return nil unless number && number.to_i > 0
+  room_group.entities.to_a.find do |e|
+    e.valid? &&
+      validator_entity_type(e) == 'حائط' &&
+      e.get_attribute(DICT, 'رقم الحائط').to_i == number.to_i
+  end
+rescue
+  nil
+end
+
+def validator_room_entities(room_group)
+  return [] unless room_group && room_group.valid?
+  room_group.entities.to_a.select(&:valid?)
+rescue
+  []
+end
+
+def validator_signature(room_group)
+  return '' unless room_group && room_group.valid?
+  parts = []
+  begin
+    parts << room_group.get_attribute(DICT, 'room_pts_json').to_s
+    parts << room_group.get_attribute(DICT, 'build_data_json').to_s
+  rescue
+  end
+  room_group.entities.to_a.each do |e|
+    next unless e.valid?
+    type = validator_entity_type(e)
+    next if type == 'غرفة'
+    begin
+      parts << [
+        validator_uuid(e),
+        type,
+        e.name.to_s,
+        e.layer.name.to_s,
+        validator_bbox_dimensions(e).map { |x| x.round(3) }.join(','),
+        validator_wall_number_from_entity(e).to_s
+      ].join('|')
+    rescue
+      parts << e.object_id.to_s
+    end
+  end
+  Zlib.crc32(parts.join('||')).to_s
+rescue
+  Time.now.to_f.to_s
+end
+
+def validator_build_data(room_group)
+  data = build_data_from_group(room_group) || {}
+  wall_h = room_group.get_attribute(DICT, 'ارتفاع الحائط سم').to_f
+  wall_t = room_group.get_attribute(DICT, 'سمك الحائط سم').to_f
+  {
+    'room_name' => room_group.get_attribute(DICT, 'اسم الغرفة').to_s,
+    'wall_h_cm' => wall_h > 0 ? wall_h : data['wall_h'].to_f,
+    'wall_t_cm' => wall_t > 0 ? wall_t : data['wall_t'].to_f,
+    'tolerance_cm' => read_pref('validator_tolerance_cm', 0.5).to_f
+  }
+end
+
+def validator_collect(room_group)
+  return nil unless room_group && room_group.valid?
+  room_pts = room_pts_from_group(room_group)
+  data = validator_build_data(room_group)
+  tolerance = [[data['tolerance_cm'].to_f, 0.1].max, 10.0].min
+
+  wall_entities = validator_room_entities(room_group).select { |e| validator_entity_type(e) == 'حائط' }
+  walls = []
+
+  wall_entities.sort_by { |e| e.get_attribute(DICT, 'رقم الحائط').to_i }.each_with_index do |wall, idx|
+    p1s = wall.get_attribute(DICT, 'P1').to_s
+    p2s = wall.get_attribute(DICT, 'P2').to_s
+    p1 = p1s.empty? ? nil : Geom::Point3d.new(*p1s.split('|').map(&:to_f))
+    p2 = p2s.empty? ? nil : Geom::Point3d.new(*p2s.split('|').map(&:to_f))
+    if p1.nil? || p2.nil?
+      dims = validator_bbox_dimensions(wall)
+      length_cm = wall.get_attribute(DICT, 'طول الحائط سم').to_f
+      length_cm = [dims[0], dims[1]].max if length_cm <= 0
+      walls << {
+        'number' => wall.get_attribute(DICT, 'رقم الحائط').to_i,
+        'name' => validator_item_name(wall),
+        'length_cm' => length_cm,
+        'available_cm' => length_cm,
+        'used_cm' => 0.0,
+        'opening_cm' => 0.0,
+        'items' => [],
+        'entity_uuid' => validator_uuid(wall),
+        'p1' => nil,
+        'p2' => nil
+      }
+      next
+    end
+    walls << {
+      'number' => wall.get_attribute(DICT, 'رقم الحائط').to_i,
+      'name' => validator_item_name(wall),
+      'length_cm' => p1.distance(p2).to_cm,
+      'available_cm' => p1.distance(p2).to_cm,
+      'used_cm' => 0.0,
+      'opening_cm' => 0.0,
+      'items' => [],
+      'entity_uuid' => validator_uuid(wall),
+      'p1' => p1,
+      'p2' => p2
+    }
+  end
+
+  candidates = validator_room_entities(room_group).select { |e| validator_candidate_entity?(e) }
+  unassigned = []
+
+  candidates.each do |entity|
+    center = validator_entity_center(entity)
+    dims = validator_bbox_dimensions(entity)
+    width_attr = validator_numeric_attr(entity, %w[Width width العرض العرض_سم])
+    depth_attr = validator_numeric_attr(entity, %w[Depth depth العمق العمق_سم])
+    height_attr = validator_numeric_attr(entity, %w[Height height الارتفاع الارتفاع_سم])
+    explicit_wall = validator_wall_number_from_entity(entity)
+
+    walls.sort_by do |wall|
+      if explicit_wall && wall['number'].to_i == explicit_wall.to_i
+        0.0
+      elsif center && wall['p1'] && wall['p2']
+        validator_wall_segment_distance_cm(center, wall['p1'], wall['p2'])
+      else
+        999999.0
+      end
+    end.tap do |ordered|
+      wall = ordered.first
+      distance = if wall && center && wall['p1'] && wall['p2']
+        validator_wall_segment_distance_cm(center, wall['p1'], wall['p2'])
+      else
+        999999.0
+      end
+
+      assigned = wall && (
+        (explicit_wall && wall['number'].to_i == explicit_wall.to_i) ||
+        (!explicit_wall && distance <= [dims.max.to_f + 15.0, 75.0].max)
+      )
+
+      item_length = if wall && wall['p1'] && wall['p2']
+        validator_projection_length_cm(entity, wall['p1'], wall['p2'])
+      else
+        [width_attr.to_f, dims[0], dims[1]].max
+      end
+      item_length = width_attr.to_f if width_attr && width_attr > 0
+      item_length = item_length.round(2)
+
+      z0, z1 = validator_entity_z_range_cm(entity)
+      item = {
+        'name' => validator_item_name(entity),
+        'uuid' => validator_uuid(entity),
+        'wall_number' => wall ? wall['number'] : nil,
+        'length_cm' => item_length,
+        'width_cm' => (width_attr || dims.max).round(2),
+        'depth_cm' => (depth_attr || dims.min).round(2),
+        'height_cm' => (height_attr || dims[2]).round(2),
+        'z_min_cm' => z0.round(2),
+        'z_max_cm' => z1.round(2),
+        'opening' => validator_opening?(entity),
+        'distance_cm' => distance.round(2),
+        'entity_id' => (entity.entityID rescue entity.object_id)
+      }
+
+      if assigned
+        wall['items'] << item
+        if item['opening']
+          wall['opening_cm'] += item['length_cm']
+        else
+          wall['used_cm'] += item['length_cm']
+        end
+      else
+        unassigned << item
+      end
+    end
+  end
+
+  walls.each do |wall|
+    wall['available_cm'] = [wall['length_cm'] - wall['opening_cm'], 0.0].max
+    wall['remaining_cm'] = wall['available_cm'] - wall['used_cm']
+    wall['status'] =
+      if wall['used_cm'] > wall['available_cm'] + tolerance
+        'error'
+      elsif wall['used_cm'] > wall['available_cm'] + 0.001
+        'warning'
+      elsif wall['remaining_cm'] < tolerance
+        'warning'
+      else
+        'ok'
+      end
+  end
+
+  errors = []
+  warnings = []
+
+  walls.each do |wall|
+    if wall['used_cm'] > wall['available_cm'] + tolerance
+      errors << {
+        'kind' => 'overflow',
+        'wall_number' => wall['number'],
+        'title' => "#{wall['name']} — تجاوز المساحة",
+        'text' => "المستخدم #{wall['used_cm'].round(2)} سم مقابل #{wall['available_cm'].round(2)} سم، التجاوز #{(wall['used_cm'] - wall['available_cm']).round(2)} سم"
+      }
+    elsif wall['remaining_cm'].abs <= tolerance
+      warnings << {
+        'kind' => 'tight',
+        'wall_number' => wall['number'],
+        'title' => "#{wall['name']} — بدون هامش تقريباً",
+        'text' => "المتبقي #{wall['remaining_cm'].round(2)} سم"
+      }
+    end
+  end
+
+  unassigned.each do |item|
+    warnings << {
+      'kind' => 'unassigned',
+      'wall_number' => nil,
+      'title' => "#{item['name']} — غير مرتبط بحائط",
+      'text' => "المقاس التقريبي #{item['length_cm']} × #{item['depth_cm']} سم"
+    }
+  end
+
+  {
+    'room_name' => data['room_name'],
+    'wall_h_cm' => data['wall_h_cm'].round(2),
+    'wall_t_cm' => data['wall_t_cm'].round(2),
+    'tolerance_cm' => tolerance.round(2),
+    'walls' => walls,
+    'unassigned' => unassigned,
+    'errors' => errors,
+    'warnings' => warnings,
+    'items_count' => candidates.length,
+    'signature' => validator_signature(room_group)
+  }
+rescue => e
+  {
+    'room_name' => room_group ? room_group.name.to_s : '',
+    'wall_h_cm' => 0.0,
+    'wall_t_cm' => 0.0,
+    'tolerance_cm' => 0.5,
+    'walls' => [],
+    'unassigned' => [],
+    'errors' => [{ 'kind' => 'engine', 'title' => 'Validator Error', 'text' => e.message.to_s }],
+    'warnings' => [],
+    'items_count' => 0,
+    'signature' => ''
+  }
+end
+
+def validator_escape(value)
+  value.to_s.
+    gsub('&', '&amp;').
+    gsub('<', '&lt;').
+    gsub('>', '&gt;').
+    gsub('"', '&quot;').
+    gsub("'", '&#39;')
+end
+
+def validator_find_entity_by_id(room_group, id)
+  target = id.to_i
+  room_group.entities.to_a.find { |e| e.valid? && (e.entityID rescue -1).to_i == target }
+rescue
+  nil
+end
+
+def validator_select_entity(room_group, id)
+  entity = validator_find_entity_by_id(room_group, id)
+  unless entity
+    UI.messagebox('⚠️ لم يتم العثور على العنصر داخل الغرفة.')
+    return
+  end
+  model = Sketchup.active_model
+  model.selection.clear
+  model.selection.add(entity)
+  begin
+    model.active_view.zoom(entity)
+  rescue
+  end
+  model.active_view.invalidate
+end
+
+def validator_dialog_update(dlg, room_group)
+  data = validator_collect(room_group)
+  payload = JSON.generate(data).gsub('\\', '\\\\\\').gsub("'", "\\'")
+  dlg.execute_script("window.mhdValidator && window.mhdValidator.apply(#{payload});")
+  data
+rescue
+  nil
+end
+
+def open_dimension_validator(room_group)
+  room_group ||= find_room_group(Sketchup.active_model.selection.first)
+  unless room_group && room_group.valid?
+    UI.messagebox(ts('حدد أي عنصر داخل غرفة MHD أولاً.'))
+    return
+  end
+
+  tolerance_default = read_pref('validator_tolerance_cm', 0.5).to_f
+  dlg = UI::HtmlDialog.new(
+    dialog_title: "MHD Dimension Validator | #{room_group.name}",
+    preferences_key: "#{VALIDATOR_PREF_KEY}_WINDOW",
+    scrollable: false,
+    resizable: true,
+    width: 780,
+    height: 760,
+    min_width: 620,
+    min_height: 520,
+    style: UI::HtmlDialog::STYLE_DIALOG
+  )
+
+  html = <<-HTML
+<!DOCTYPE html>
+<html lang="#{ui_locale}" dir="#{ui_direction}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box}
+:root{--bg:#07131d;--panel:#0c2230;--panel2:#0b1b27;--line:#1d3749;--txt:#edf8fb;--muted:#9bb2bf;--ok:#42df78;--warn:#f0c75e;--err:#ff5f6d}
+html,body{width:100%;height:100%;margin:0;background:var(--bg);color:var(--txt);font-family:Arial,Tahoma,sans-serif;overflow:hidden}
+body{direction:#{ui_direction}}
+.app{height:100%;display:flex;flex-direction:column;padding:12px;gap:10px}
+.head{display:flex;justify-content:space-between;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px}
+.title{font-size:20px;font-weight:900}.sub{font-size:12px;color:var(--muted);margin-top:4px}
+.actions{display:flex;gap:7px;align-items:center}
+button{border:0;border-radius:9px;height:36px;padding:0 12px;font-weight:900;cursor:pointer}
+.refresh{background:#13384b;color:#fff;border:1px solid #28546b}.close{background:#0a1924;color:#fff;border:1px solid var(--line)}
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.kpi{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:10px}.kpi b{display:block;font-size:21px}.kpi span{font-size:11px;color:var(--muted)}
+.content{flex:1;min-height:0;overflow:auto;padding-right:2px}
+.section{margin-bottom:10px}
+.section h3{font-size:14px;margin:0 0 7px}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:9px;margin-bottom:7px}
+.row{display:grid;grid-template-columns:1.2fr .8fr .8fr .8fr .7fr .8fr auto;gap:6px;align-items:center;font-size:12px}
+.row.headrow{color:var(--muted);font-weight:900;padding:0 4px 6px}
+.cell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.num{text-align:center}
+.pill{display:inline-flex;align-items:center;justify-content:center;padding:4px 8px;border-radius:99px;font-size:11px;font-weight:900}
+.ok{background:rgba(66,223,120,.14);color:var(--ok)}.warning{background:rgba(240,199,94,.14);color:var(--warn)}.error{background:rgba(255,95,109,.14);color:var(--err)}
+.smallbtn{height:29px;padding:0 9px;background:#12364a;color:#fff;border:1px solid #24556d}
+.issue{display:flex;justify-content:space-between;gap:10px;align-items:center}.issue b{font-size:12px}.issue span{font-size:11px;color:var(--muted)}
+.settings{display:flex;gap:8px;align-items:center;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:9px}
+.settings label{font-size:12px;color:var(--muted)}.settings input{width:90px;height:30px;background:#08141e;border:1px solid #284255;color:#fff;border-radius:7px;text-align:center}
+.empty{padding:16px;text-align:center;color:var(--muted)}
+@media (max-width:700px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.row{grid-template-columns:1.2fr .8fr .8fr .8fr .7fr auto}.row .depth,.row .height{display:none}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="head">
+    <div><div class="title">📐 MHD Dimension Validator</div><div class="sub" id="roomName">#{validator_escape(room_group.name)}</div></div>
+    <div class="actions"><button class="refresh" onclick="sketchup.refresh()">↻ تحديث</button><button class="close" onclick="sketchup.close()">إغلاق</button></div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><b id="kErrors">0</b><span>أخطاء حرجة</span></div>
+    <div class="kpi"><b id="kWarnings">0</b><span>تحذيرات</span></div>
+    <div class="kpi"><b id="kWalls">0</b><span>حوائط مفحوصة</span></div>
+    <div class="kpi"><b id="kItems">0</b><span>عناصر مفحوصة</span></div>
+  </div>
+
+  <div class="settings">
+    <label>هامش السماح لكل حائط (سم)</label>
+    <input id="tol" type="number" step="0.1" min="0.1" max="10" value="#{tolerance_default}">
+    <button class="refresh" onclick="saveTol()">حفظ الهامش وتحديث</button>
+    <span id="signature" style="margin-inline-start:auto;font-size:10px;color:#6e8795"></span>
+  </div>
+
+  <div class="content">
+    <div class="section">
+      <h3>🧱 الحوائط</h3>
+      <div class="row headrow"><div>الحائط</div><div class="num">الطول</div><div class="num">الفتحات</div><div class="num">المستخدم</div><div class="num">المتبقي</div><div class="num">الحالة</div><div></div></div>
+      <div id="walls"></div>
+    </div>
+
+    <div class="section">
+      <h3>🚨 الأخطاء</h3>
+      <div id="errors"></div>
+    </div>
+
+    <div class="section">
+      <h3>⚠️ التحذيرات</h3>
+      <div id="warnings"></div>
+    </div>
+
+    <div class="section">
+      <h3>📦 العناصر غير المرتبطة بحائط</h3>
+      <div id="unassigned"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+window.mhdValidator = {
+  apply:function(d){
+    document.getElementById('roomName').textContent = d.room_name || '';
+    document.getElementById('kErrors').textContent = (d.errors||[]).length;
+    document.getElementById('kWarnings').textContent = (d.warnings||[]).length;
+    document.getElementById('kWalls').textContent = (d.walls||[]).length;
+    document.getElementById('kItems').textContent = d.items_count || 0;
+    document.getElementById('tol').value = d.tolerance_cm;
+    document.getElementById('signature').textContent = d.signature || '';
+
+    const walls = document.getElementById('walls');
+    if(!(d.walls||[]).length){ walls.innerHTML='<div class="empty">لا توجد حوائط MHD قابلة للفحص.</div>'; }
+    else {
+      walls.innerHTML=(d.walls||[]).map(w=>{
+        const cls=w.status||'ok';
+        const txt=cls==='error'?'🔴 خطأ':(cls==='warning'?'🟡 تحذير':'🟢 سليم');
+        const rem=Number(w.remaining_cm||0).toFixed(2);
+        const btn=w.entity_uuid ? '<button class="smallbtn" onclick="sketchup.selectWall('+Number(w.number||0)+')">تحديد</button>' : '';
+        return '<div class="card"><div class="row">'+
+          '<div class="cell"><b>'+esc(w.name)+'</b></div>'+
+          '<div class="cell num">'+Number(w.length_cm||0).toFixed(2)+' سم</div>'+
+          '<div class="cell num">'+Number(w.opening_cm||0).toFixed(2)+' سم</div>'+
+          '<div class="cell num">'+Number(w.used_cm||0).toFixed(2)+' سم</div>'+
+          '<div class="cell num">'+rem+' سم</div>'+
+          '<div class="cell num"><span class="pill '+cls+'">'+txt+'</span></div>'+
+          '<div>'+btn+'</div>'+
+          '</div></div>';
+      }).join('');
+    }
+
+    renderIssues('errors',d.errors||[],'error');
+    renderIssues('warnings',d.warnings||[],'warning');
+
+    const ua=document.getElementById('unassigned');
+    if(!(d.unassigned||[]).length){ua.innerHTML='<div class="empty">كل العناصر القابلة للفحص مرتبطة بحائط أو لا توجد عناصر إضافية.</div>';}
+    else{
+      ua.innerHTML=(d.unassigned||[]).map(i=>
+        '<div class="card issue"><div><b>'+esc(i.name)+'</b><br><span>'+Number(i.length_cm||0).toFixed(2)+' × '+Number(i.depth_cm||0).toFixed(2)+' سم</span></div>'+
+        '<button class="smallbtn" onclick="sketchup.selectEntity('+Number(i.entity_id||0)+')">تحديد</button></div>'
+      ).join('');
+    }
+  }
+};
+
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+function renderIssues(id,arr,kind){
+  const el=document.getElementById(id);
+  if(!arr.length){el.innerHTML='<div class="empty">لا توجد '+(kind==='error'?'أخطاء':'تحذيرات')+' حالياً ✅</div>';return}
+  el.innerHTML=arr.map(i=>'<div class="card issue"><div><b>'+esc(i.title)+'</b><br><span>'+esc(i.text)+'</span></div>'+
+    (i.wall_number ? '<button class="smallbtn" onclick="sketchup.selectWall('+Number(i.wall_number)+')">تحديد الحائط</button>':'')+
+    '</div>').join('');
+}
+function saveTol(){
+  const v=parseFloat(document.getElementById('tol').value);
+  if(!(v>0) || v>10){alert('الهامش يجب أن يكون بين 0.1 و10 سم');return}
+  sketchup.saveTolerance(String(v));
+}
+</script>
+</body>
+</html>
+HTML
+
+  dlg.set_html(html)
+  dlg.add_action_callback('close') do
+    UI.stop_timer(timer_id) if timer_id
+    closed = true
+    dlg.close
+  end
+  dlg.add_action_callback('refresh') { validator_dialog_update(dlg, room_group) }
+  dlg.add_action_callback('saveTolerance') do |_, value|
+    n = value.to_f
+    n = 0.5 if n <= 0
+    n = 10.0 if n > 10
+    write_pref('validator_tolerance_cm', n)
+    validator_dialog_update(dlg, room_group)
+  end
+  dlg.add_action_callback('selectWall') do |_, number|
+    wall = validator_find_wall(room_group, number.to_i)
+    if wall
+      model = Sketchup.active_model
+      model.selection.clear
+      model.selection.add(wall)
+      model.active_view.zoom(wall) rescue nil
+      model.active_view.invalidate
+    end
+  end
+  dlg.add_action_callback('selectEntity') { |_, id| validator_select_entity(room_group, id) }
+
+  timer_id = nil
+  closed = false
+  signature = ''
+  dlg.set_on_closed do
+    closed = true
+    UI.stop_timer(timer_id) if timer_id
+  end
+
+  dlg.show
+  UI.start_timer(0.15, false) do
+    next if closed
+    validator_dialog_update(dlg, room_group)
+  end
+
+  # Live integration: polling is deliberately lightweight and refreshes only
+  # when the room's tracked geometry/attributes have changed.
+  timer_id = UI.start_timer(VALIDATOR_POLL_MS / 1000.0, true) do
+    break if closed
+    begin
+      current_signature = validator_signature(room_group)
+      if current_signature != signature
+        signature = current_signature
+        validator_dialog_update(dlg, room_group)
+      end
+    rescue
+    end
+  end
+end
+
+class DimensionValidatorPickTool
+  def activate
+    Sketchup.status_text = ts('انقر على أي جزء داخل غرفة MHD لفتح فاحص الأبعاد')
+  end
+
+  def onLButtonDown(_flags, x, y, view)
+    ph = view.pick_helper
+    ph.do_pick(x, y)
+    ent = ph.best_picked
+    room = ent ? find_room_group(ent) : nil
+    unless room
+      UI.messagebox(ts('هذا العنصر ليس جزءاً من غرفة MHD.'))
+      return
+    end
+    open_dimension_validator(room)
+  end
+
+  def onCancel(_reason, _view)
+    Sketchup.active_model.select_tool(nil)
+  end
+end
+
+def activate_dimension_validator
+  Sketchup.active_model.select_tool(DimensionValidatorPickTool.new)
+end
+
+# =========================================================
+# END MHD DIMENSION VALIDATOR
+# =========================================================
+
+
 # -------------------------
 # Modern HTML Dialog
 # -------------------------
@@ -3655,6 +4383,7 @@ selection = model.selection.to_a
   if room_group
     menu.add_separator
     menu.add_item(ts('⚙️ تعديل الغرفة')) { open_edit_room_dialog(room_group) }
+    menu.add_item(ts('📐 فحص الأبعاد الذكي')) { open_dimension_validator(room_group) }
 
     # كمر: يظهر عند تحديد حائط أو كمر
     wall_entity = selection.find do |entity|
@@ -3695,6 +4424,16 @@ end
 
 UI.menu('Plugins').add_item(ts('MHD - شطرة الحائط (ضبط الزوايا)')) do
   activate_shatra_picker
+end
+
+UI.menu('Plugins').add_separator
+UI.menu('Plugins').add_item(ts('MHD - 📐 فاحص الأبعاد الذكي')) do
+  room = find_room_group(Sketchup.active_model.selection.first)
+  if room
+    open_dimension_validator(room)
+  else
+    activate_dimension_validator
+  end
 end
 
 
