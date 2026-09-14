@@ -947,6 +947,150 @@ rescue
   false
 end
 
+
+def orthogonal_quadrilateral?(pts, tol_deg = 3.0)
+  return false unless pts.is_a?(Array) && pts.length == 4
+  4.times do |i|
+    a = pts[i]
+    b = pts[(i + 1) % 4]
+    c = pts[(i + 2) % 4]
+    u = a.vector_to(b)
+    v = b.vector_to(c)
+    return false if u.length <= 0.1.mm || v.length <= 0.1.mm
+    u.normalize!
+    v.normalize!
+    dot = [[u.dot(v), -1.0].max, 1.0].min
+    angle = Math.acos(dot) * 180.0 / Math::PI
+    return false if (angle - 90.0).abs > tol_deg
+  end
+  true
+rescue
+  false
+end
+
+def build_smart_wall_edit_points(room_group, wall_number, new_length_cm, anchor)
+  pts = room_pts_from_group(room_group)
+  return nil unless pts && pts.length >= 3
+  idx = wall_number.to_i - 1
+  return nil if idx < 0 || idx >= pts.length
+
+  if orthogonal_quadrilateral?(pts)
+    j = (idx + 1) % 4
+    opp_j = (idx + 2) % 4
+    opp_i = (idx + 3) % 4
+    p1 = pts[idx]
+    p2 = pts[j]
+    vec = p1.vector_to(p2)
+    return nil if vec.length <= 0.1.mm
+    dir = vec.clone
+    dir.normalize!
+    target = new_length_cm.to_f.cm
+    return nil if target <= 0.1.cm
+    old_len = vec.length
+    delta = target - old_len
+
+    result = pts.map { |p| p.clone }
+    case anchor.to_s
+    when 'end'
+      # ثبّت نهاية الحائط، وحرك بداية الحائط والنقطة المناظرة في الحائط المقابل.
+      move = dir.reverse
+      result[idx] = p2.offset(move, delta)
+      result[opp_i] = pts[opp_i].offset(move, delta)
+    when 'center'
+      half = delta / 2.0
+      result[idx] = p1.offset(dir.reverse, half)
+      result[j]   = p2.offset(dir, half)
+      result[opp_i] = pts[opp_i].offset(dir.reverse, half)
+      result[opp_j] = pts[opp_j].offset(dir, half)
+    else
+      # ثبّت بداية الحائط، وحرك النهاية والنقطة المناظرة في الحائط المقابل بنفس المتجه.
+      result[j] = p1.offset(dir, target)
+      move_vec = p2.vector_to(result[j])
+      result[opp_j] = pts[opp_j].offset(move_vec)
+    end
+    return result
+  end
+
+  build_wall_edit_points(room_group, wall_number, new_length_cm, anchor)
+rescue
+  nil
+end
+
+def remove_legacy_source_floor_geometry(old_pts)
+  model = Sketchup.active_model
+  return unless old_pts && old_pts.length >= 3
+
+  matches_loop = lambda do |face|
+    verts = face.outer_loop.vertices.map(&:position)
+    return false unless verts.length == old_pts.length
+    n = old_pts.length
+    n.times do |shift|
+      ok = true
+      n.times do |k|
+        if verts[k].distance(old_pts[(k + shift) % n]) > 0.01.cm
+          ok = false
+          break
+        end
+      end
+      return true if ok
+    end
+    false
+  rescue
+    false
+  end
+
+  model.entities.to_a.grep(Sketchup::Face).each do |face|
+    next unless face.valid?
+    next unless matches_loop.call(face)
+    edges = face.edges.dup
+    face.erase!
+    edges.each do |edge|
+      begin
+        edge.erase! if edge.valid? && edge.faces.empty?
+      rescue
+      end
+    end
+  end
+rescue
+  nil
+end
+
+def shatra_classification(angle_deg)
+  delta = angle_deg.to_f - 90.0
+  if delta.abs <= 0.10
+    { 'status' => 'قائمة 90°', 'type' => 'قائمة', 'deviation' => 0.0, 'direction' => 'لا يوجد شطف' }
+  elsif delta > 0
+    { 'status' => 'مشطولة', 'type' => 'مشطولة', 'deviation' => delta.abs, 'direction' => 'مفتوحة عن القائمة' }
+  else
+    { 'status' => 'مشطولة', 'type' => 'مشطولة', 'deviation' => delta.abs, 'direction' => 'مقفولة عن القائمة' }
+  end
+end
+
+def shatra_result_text(a_cm, b_cm, diagonal_cm, angle_deg)
+  cls = shatra_classification(angle_deg)
+  right_diag = Math.sqrt(a_cm.to_f**2 + b_cm.to_f**2)
+  diag_diff = diagonal_cm.to_f - right_diag
+  "الحالة: #{cls['status']}\nمقدار الشطف/الانحراف: #{cls['deviation'].round(2)}°\nالاتجاه: #{cls['direction']}\nالزاوية: #{angle_deg.round(2)}°\nقطر القائمة لنفس الضلعين: #{right_diag.round(2)} سم\nفرق القطر عن القائمة: #{diag_diff.round(2)} سم"
+end
+
+def current_corner_angle(pts, corner_idx)
+  return nil unless pts && pts.length >= 3
+  i = corner_idx.to_i
+  return nil if i < 0 || i >= pts.length
+  prev = pts[(i - 1) % pts.length]
+  cur = pts[i]
+  nxt = pts[(i + 1) % pts.length]
+  u = cur.vector_to(prev)
+  v = cur.vector_to(nxt)
+  return nil if u.length <= 0.1.mm || v.length <= 0.1.mm
+  u.normalize!
+  v.normalize!
+  dot = [[u.dot(v), -1.0].max, 1.0].min
+  Math.acos(dot) * 180.0 / Math::PI
+rescue
+  nil
+end
+
 def build_wall_edit_points(room_group, wall_number, new_length_cm, anchor)
   pts = wall_points_from_room(room_group)
   return nil unless pts && pts.length >= 3
@@ -1070,7 +1214,8 @@ def apply_wall_edit(room_group, wall_number, data)
   room_data['wall_h'] = new_height
   room_data['wall_t'] = new_thickness
 
-  new_pts = build_wall_edit_points(room_group, wall_number, new_length, anchor)
+  old_pts = room_pts_from_group(room_group)
+  new_pts = build_smart_wall_edit_points(room_group, wall_number, new_length, anchor)
   unless new_pts && polygon_valid_for_wall_edit?(new_pts)
     UI.messagebox(ts('القيمة الجديدة أدت إلى شكل غرفة غير صالح. جرّب طولاً أكبر أو نقطة تثبيت مختلفة.'))
     return false
@@ -1080,6 +1225,7 @@ def apply_wall_edit(room_group, wall_number, data)
   model.start_operation('MHD Parametric Wall Edit', true)
   begin
     old_wall_name = rec['name']
+    remove_legacy_source_floor_geometry(old_pts)
     rebuild_room_after_wall_edit(room_group, new_pts, room_data)
 
     if new_name != old_wall_name
@@ -1421,8 +1567,10 @@ def apply_shatra_calibration(room_group, corner_idx, data)
   model = Sketchup.active_model
   room_data = build_data_from_group(room_group) || {}
   room_data = room_data.dup
+  old_pts = pts.map(&:clone)
   model.start_operation('MHD Smart Shatra Calibration', true)
   begin
+    remove_legacy_source_floor_geometry(old_pts)
     # نبني كل Geometry مرة واحدة من النقاط الجديدة ثم نعيد رسم مرجع الشطرة.
     rebuild_room_after_wall_edit(room_group, new_pts, room_data)
 
@@ -1441,7 +1589,7 @@ def apply_shatra_calibration(room_group, corner_idx, data)
 
     model.commit_operation
     model.active_view.invalidate
-    UI.messagebox("✅ تم ضبط الشطرة بنجاح\n\nالمقاس الأول: #{a.round(2)} سم\nالمقاس الثاني: #{b.round(2)} سم\nالقطر: #{diag.round(2)} سم\nالزاوية المحسوبة: #{angle.round(2)}°")
+    UI.messagebox("✅ تم ضبط الشطرة بنجاح\n\n#{shatra_result_text(a, b, diag, angle)}")
     true
   rescue => e
     model.abort_operation rescue nil
@@ -1491,7 +1639,7 @@ button{flex:1;height:44px;border:0;border-radius:9px;font-weight:900;font-size:1
 <div class="row"><label>القطر بين النقطتين سم</label><input id="c" type="number" min="0.1" step="0.1" value="85"></div>
 </div>
 <div class="card">
-<div class="result">الزاوية: <span id="angle">—</span>°</div>
+<div class="result">الزاوية: <span id="angle">—</span>°<br><span id="state" style="font-size:14px;display:inline-block;margin-top:7px">الحالة: —</span><br><span id="deviation" style="font-size:13px;display:inline-block;margin-top:4px">الشطف: —</span></div>
 <div class="hint">مثال: 60 سم + 60 سم + قطر 85 سم ⇒ الزاوية حوالي 90.20°. عند التطبيق يتم تعديل اتجاه الحائطين حول الركن مع الحفاظ على أطوالهما الحالية.</div>
 </div>
 <div class="card">
@@ -1506,7 +1654,12 @@ function calc(){
  const x=(a*a+b*b-c*c)/(2*a*b);
  if(x<-1||x>1){document.getElementById('angle').textContent='غير صالح';return null}
  const deg=Math.acos(Math.max(-1,Math.min(1,x)))*180/Math.PI;
+ const dev=Math.abs(deg-90);
+ let state='قائمة 90°';
+ if(dev>0.1) state='مشطولة ' + (deg>90 ? '(مفتوحة)' : '(مقفولة)');
  document.getElementById('angle').textContent=deg.toFixed(2);
+ document.getElementById('state').textContent='الحالة: '+state;
+ document.getElementById('deviation').textContent='الشطف/الانحراف عن 90°: '+dev.toFixed(2)+'°';
  return {a_cm:a,b_cm:b,diagonal_cm:c};
 }
 ['a','b','c'].forEach(id=>document.getElementById(id).addEventListener('input',calc));
@@ -2767,6 +2920,7 @@ count.times do |i|
     'P4' => pt_to_s(p4)
   })
 end
+remove_legacy_source_floor_geometry(pts)
 model.commit_operation
 UI.messagebox(ts('تم بناء الغرفة بنجاح'))
 
@@ -2801,7 +2955,7 @@ selection = model.selection.to_a
 
   if room_group
     menu.add_separator
-    menu.add_item(ts('⚙️ تعديل المــطــبـــخ')) { open_edit_room_dialog(room_group) }
+    menu.add_item(ts('⚙️ تعديل المـــطبـــخ')) { open_edit_room_dialog(room_group) }
 
     # كمر: يظهر عند تحديد حائط أو كمر
     wall_entity = selection.find do |entity|
