@@ -4088,9 +4088,30 @@ def build_wall_geometry_data(pts, wall_t, closed)
   end
 end
 
+def prepare_source_edges_after_build(source_edges, model, room_name, room_uuid)
+  return if source_edges.nil? || source_edges.empty?
+  ref_tag_name = "#{room_name} | مرجع الحوائط"
+  ref_tag = tag(model, ref_tag_name)
+  source_edges.each_with_index do |edge, idx|
+    next unless edge && edge.valid?
+    begin
+      edge.layer = ref_tag
+      edge.hidden = true if edge.respond_to?(:hidden=)
+      edge.set_attribute(DICT, 'النوع', 'مرجع حائط')
+      edge.set_attribute(DICT, 'Room_UUID', room_uuid)
+      edge.set_attribute(DICT, 'اسم الغرفة', room_name)
+      edge.set_attribute(DICT, 'رقم المصدر', idx + 1)
+    rescue
+      # A source edge can belong to locked/foreign geometry; never let that
+      # prevent the real wall construction from completing.
+    end
+  end
+end
+
 def build_from_data(data)
   model = Sketchup.active_model
   face = selected_face
+  source_edges = model.selection.grep(Sketchup::Edge).select(&:valid?)
   closed = false
 
   if face
@@ -4147,6 +4168,7 @@ def build_from_data(data)
 
     room_group.name = room_name
     room_group.layer = tag(model, room_name)
+    room_group.set_attribute(DICT, 'Wall_Builder_Mode', face ? 'Face' : 'Edges')
 
     save_room_pts(room_group, pts)
     save_build_data(room_group, data.merge('open_path' => (!closed)))
@@ -4204,8 +4226,9 @@ def build_from_data(data)
       wall_def = model.definitions.add("#{room_name}_#{wall_name}_#{stamp}_#{rand(9999)}")
       add_prism(wall_def.entities, p1, p2, p3, p4, 0, wall_h)
       wall_inst = room_ents.add_instance(wall_def, Geom::Transformation.new)
-      wall_inst.name = wall_name
-      wall_inst.layer = tag(model, "#{room_name} | #{wall_name}")
+      wall_tag_name = "#{room_name} | #{wall_name}".to_s
+      wall_inst.name = wall_name.to_s
+      wall_inst.layer = tag(model, wall_tag_name)
       set_attrs(wall_inst, {
         'UUID' => uuid,
         'Room_UUID' => room_uuid,
@@ -4224,8 +4247,12 @@ def build_from_data(data)
       })
     end
 
+    # Keep the original Lines available as a hidden construction reference,
+    # but attach them to the same room so they never remain as stray Untagged geometry.
+    prepare_source_edges_after_build(source_edges, model, room_name, room_uuid) unless face
+
     # Source Face is consumed only when a Face was selected. Open Line paths
-    # are intentionally preserved as the user's construction reference.
+    # are intentionally preserved as a hidden construction reference.
     remove_legacy_source_floor_geometry(pts) if face && closed
     model.commit_operation
     UI.messagebox(ts(closed ? 'تم بناء الغرفة والحائط من الـFace بنجاح' : 'تم بناء الحوائط من الـLines بنجاح — المسار مفتوح ويمكن إكماله لاحقاً'))
@@ -4285,9 +4312,9 @@ end
 
 # لا يتم تشغيل أداة رسم حوائط تفاعلية؛ الرسم يتم من أدوات SketchUp Line / Rectangle أو أي Edges محددة ثم يتم بناء الحوائط مباشرة.
 
-UI.menu('Plugins').add_item(ts('MHD - بناء الحوائط من Edges / Line / Rectangle')) do
-  build
-end
+build_menu = UI.menu('Plugins')
+build_menu.add_item(ts('MHD - بناء الحوائط من Edges / Line / Rectangle')) { build }
+build_menu.add_item(ts('MHD - بناء الحوائط من Edges (مربوط بالتاج والـRoom)')) { build }
 
 UI.menu('Plugins').add_item(ts('MHD - تعديل غرفة (نقر تفاعلي)')) do
   activate_room_edit_picker
