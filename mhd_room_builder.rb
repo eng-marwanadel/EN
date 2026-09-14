@@ -680,7 +680,7 @@ ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual ||
                        floor_t_new, name_new, room_uuid) if floor_on_new && floor_t_new > 0
     delete_room_parts(room_group, 'سقف')
     if ceiling_on_new && ceil_t_new > 0
-      build_ceiling(model, room_group, name_new, room_uuid,
+      build_ceiling(model, room_group.entities, name_new, room_uuid,
                     new_outward, pts,
                     wall_h_new.cm, ceil_t_new.cm, ceil_t_new, new_data)
     end
@@ -703,7 +703,7 @@ ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual ||
       delete_room_parts(room_group, 'سقف')
       if ceiling_on_new && ceil_t_new > 0
         current_outward = compute_outward_pts(pts, wall_t_old.cm)
-        build_ceiling(model, room_group, name_new, room_uuid,
+        build_ceiling(model, room_group.entities, name_new, room_uuid,
                       current_outward, pts,
                       wall_h_new.cm, ceil_t_new.cm, ceil_t_new, new_data)
       end
@@ -758,7 +758,7 @@ room_group.entities.clear!
 outward = compute_outward_pts(pts, wall_t_cm.cm)
 rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid) if floor_on && floor_t_cm > 0
 if ceiling_on && ceil_t_cm > 0
-build_ceiling(model, room_group, name, room_uuid,
+build_ceiling(model, room_group.entities, name, room_uuid,
 outward, pts,
 wall_h_cm.cm, ceil_t_cm.cm, ceil_t_cm, new_data)
 end
@@ -981,7 +981,7 @@ def rebuild_room_after_wall_edit(room_group, pts, room_data)
 
   delete_room_parts(room_group, 'سقف')
   if ceiling_on && ceil_t_cm > 0
-    build_ceiling(model, room_group, name, room_uuid, outward, pts,
+    build_ceiling(model, room_group.entities, name, room_uuid, outward, pts,
                   wall_h_cm.cm, ceil_t_cm.cm, ceil_t_cm, room_data)
   end
 
@@ -2396,7 +2396,7 @@ selection = model.selection.to_a
 
   if room_group
     menu.add_separator
-    menu.add_item(ts('⚙️ تعديل المطبخ')) { open_edit_room_dialog(room_group) }
+    menu.add_item(ts('⚙️ تعديل المـطبـخ')) { open_edit_room_dialog(room_group) }
 
     # كمر: يظهر عند تحديد حائط أو كمر
     wall_entity = selection.find do |entity|
