@@ -1549,20 +1549,11 @@ updateBig();
 </body></html>
   HTML
   dlg.set_html(html)
+  # Wall-edit dialog is independent from the shatra preview engine.
+  # The previous build accidentally inherited the shatra callbacks here,
+  # which caused undefined-variable/runtime failures when editing walls.
   dlg.add_action_callback('cancel') do
-    restore_shatra_preview(room_group)
     dlg.close
-  end
-  dlg.add_action_callback('preview') do |_, json|
-    begin
-      data = JSON.parse(json)
-      target_uuid = uuid0.to_s
-      ok = apply_shatra_preview(room_group, corner_idx, data, target_uuid)
-      raise 'تعذر تطبيق المعاينة على هندسة الغرفة.' unless ok
-      Sketchup.active_model.active_view.invalidate
-    rescue => e
-      UI.messagebox("❌ خطأ في معاينة الشطرة:\n#{e.message}")
-    end
   end
   dlg.add_action_callback('submit') do |_, json|
     begin
@@ -3593,7 +3584,7 @@ def dialog_input
   # The builder works from either a Face (Rectangle/polygon) OR raw SketchUp Edges.
   # Never require a Face for line-based wall construction.
   unless face || !edges.empty?
-    UI.messagebox(ts('حدد Edges/Lines أو Face ثم شغّل بناء الحوائط.'))
+    UI.messagebox(ts('حدد Line/Edges أو Rectangle/Face ثم شغّل بناء الحوائط.'))
     return nil
   end
 dlg = UI::HtmlDialog.new(
@@ -4155,6 +4146,16 @@ def build_from_data(data)
     return
   end
 
+  # Reject zero-length segments before creating any SketchUp definitions.
+  bad_segment = pts.each_with_index.any? do |p, i|
+    q = pts[(i + 1) % pts.length]
+    p.distance(q) <= 0.1.mm
+  end
+  if bad_segment
+    UI.messagebox(ts('يوجد Line بطول صفر أو نقطتان متطابقتان. صحح الرسم ثم أعد المحاولة.'))
+    return
+  end
+
   wall_h  = wall_h_cm.cm
   wall_t  = wall_t_cm.cm
   floor_t = floor_t_cm.cm
@@ -4287,6 +4288,38 @@ def build
 dialog_input
 end
 
+
+def validate_mhd_rooms
+  model = Sketchup.active_model
+  rooms = model.entities.grep(Sketchup::Group).select { |g| g.valid? && g.get_attribute(DICT, 'النوع').to_s == 'غرفة' }
+  errors = []
+  rooms.each do |room|
+    uuid_v = room.get_attribute(DICT, 'UUID').to_s
+    errors << "غرفة بدون UUID: #{room.name}" if uuid_v.empty?
+    pts = room_pts_from_group(room)
+    errors << "نقاط غير صالحة: #{room.name}" unless pts.is_a?(Array) && pts.length >= 3
+    room.entities.to_a.each do |e|
+      next unless e.valid?
+      kind = e.get_attribute(DICT, 'النوع').to_s
+      next if kind.empty?
+      e_uuid = e.get_attribute(DICT, 'Room_UUID').to_s
+      errors << "عنصر غير مربوط بالغرفة: #{e.name}" if e_uuid.empty? || (!uuid_v.empty? && e_uuid != uuid_v)
+      if kind == 'حائط'
+        errors << "حائط بدون رقم: #{e.name}" if e.get_attribute(DICT, 'رقم الحائط').to_i <= 0
+      end
+    end
+  end
+  if errors.empty?
+    UI.messagebox('✅ فحص MHD ناجح — لم يتم العثور على أخطاء أساسية في الغرف والعناصر المرتبطة.')
+  else
+    UI.messagebox("⚠️ تم العثور على #{errors.length} ملاحظة/مشكلة:\n\n#{errors.take(30).join('\n')}#{errors.length > 30 ? '\n…' : ''}")
+  end
+  errors.empty?
+rescue => e
+  UI.messagebox("❌ فشل فحص MHD: #{e.class}: #{e.message}")
+  false
+end
+
 unless file_loaded?(__FILE__)
 UI.add_context_menu_handler do |menu|
 model = Sketchup.active_model
@@ -4334,8 +4367,6 @@ end
 # لا يتم تشغيل أداة رسم حوائط تفاعلية؛ الرسم يتم من أدوات SketchUp Line / Rectangle أو أي Edges محددة ثم يتم بناء الحوائط مباشرة.
 
 build_menu = UI.menu('Plugins')
-build_menu.add_item(ts('MHD - بناء الحوائط من Edges / Line / Rectangle')) { build }
-build_menu.add_item(ts('MHD - بناء الحوائط من Edges (مربوط بالتاج والـRoom)')) { build }
 
 UI.menu('Plugins').add_item(ts('MHD - تعديل غرفة (نقر تفاعلي)')) do
   activate_room_edit_picker
@@ -4353,6 +4384,8 @@ end
 UI.menu('Plugins').add_item(ts('MHD - شطرة الحائط (ضبط الزوايا)')) do
   activate_shatra_picker
 end
+
+UI.menu('Plugins').add_item(ts('🩺 MHD - فحص صحة الغرف والعناصر')) { validate_mhd_rooms }
 
 file_loaded(__FILE__)
 
