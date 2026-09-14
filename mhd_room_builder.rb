@@ -590,34 +590,43 @@ end
 end
 
 def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, room_uuid)
-model = Sketchup.active_model
-delete_room_parts(room_group, 'أرضية')
-return if floor_t <= 0
-stamp = Time.now.to_i
-floor_def = model.definitions.add("#{room_name}_أرضية_#{stamp}_#{rand(9999)}")
-floor_face = floor_def.entities.add_face(outward_pts)
-return unless floor_face
-floor_face.reverse! if floor_face.normal.z < 0
-floor_face.pushpull(-floor_t)
-# إخفاء حواف الأرضية المرئية؛ حدود الأرضية لا تُظهر خطوطاً زائدة بعد تعديل الحوائط.
-floor_def.entities.grep(Sketchup::Edge).each do |edge|
-  begin
-    edge.soft = true if edge.respond_to?(:soft=)
-    edge.smooth = true if edge.respond_to?(:smooth=)
-    edge.hide!
-  rescue
+  model = Sketchup.active_model
+  delete_room_parts(room_group, 'أرضية')
+  return if floor_t.to_f <= 0 || !outward_pts || outward_pts.length < 3
+
+  # إعادة بناء الأرضية من حدود الغرفة الحالية فقط، مع إسقاط جميع النقاط على منسوب Z=0
+  pts = outward_pts.map { |p| Geom::Point3d.new(p.x, p.y, 0) }
+  return unless polygon_usable?(pts)
+
+  stamp = Time.now.to_i
+  floor_def = model.definitions.add("#{room_name}_أرضية_#{stamp}_#{rand(99999)}")
+  floor_face = floor_def.entities.add_face(pts)
+  return unless floor_face
+  floor_face.reverse! if floor_face.normal.z < 0
+  floor_face.pushpull(-floor_t)
+
+  # الأرضية سطح نظيف بدون خطوط محيط ظاهرة في المشهد.
+  floor_def.entities.grep(Sketchup::Edge).each do |edge|
+    begin
+      edge.hidden = true if edge.respond_to?(:hidden=)
+      edge.soft = true if edge.respond_to?(:soft=)
+      edge.smooth = true if edge.respond_to?(:smooth=)
+    rescue
+    end
   end
-end
-floor_inst = room_group.entities.add_instance(floor_def, Geom::Transformation.new)
-floor_inst.name = ts('الأرضية')
-floor_inst.layer = tag(model, "#{room_name} | #{ts('الأرضية')}")
-set_attrs(floor_inst, {
-'UUID' => uuid,
-'Room_UUID' => room_uuid,
-'النوع' => 'أرضية',
-'اسم الغرفة' => room_name,
-'السمك سم' => floor_t_cm
-})
+
+  floor_inst = room_group.entities.add_instance(floor_def, Geom::Transformation.new)
+  floor_inst.name = ts('الأرضية')
+  floor_inst.layer = tag(model, "#{room_name} | #{ts('الأرضية')}")
+  set_attrs(floor_inst, {
+    'UUID' => uuid,
+    'Room_UUID' => room_uuid,
+    'النوع' => 'أرضية',
+    'اسم الغرفة' => room_name,
+    'السمك سم' => floor_t_cm.to_f,
+    'حدود الغرفة' => pts.map { |q| pt_to_s(q) }.to_json
+  })
+  floor_inst
 end
 
 def apply_smart_room_update(room_group, new_data)
@@ -969,34 +978,44 @@ rescue
   nil
 end
 
-def rebuild_room_after_wall_edit(room_group, pts, room_data)
+def synchronize_room_geometry(room_group, pts, room_data)
   model = Sketchup.active_model
   room_uuid = room_group.get_attribute(DICT, 'UUID').to_s
   room_uuid = uuid if room_uuid.empty?
-  name = room_data['room_name'].to_s.strip
+  data = room_data || {}
+  name = data['room_name'].to_s.strip
   name = ts('الغرفة') if name.empty?
-  wall_h_cm = room_data['wall_h'].to_f
-  wall_t_cm = room_data['wall_t'].to_f
-  floor_t_cm = room_data['floor_t'].to_f
-  ceil_t_cm = room_data['ceil_t'].to_f
-  floor_on = enabled_value?(room_data['create_floor'])
-  ceiling_on = enabled_value?(room_data['create_ceiling'])
+  wall_h_cm = data['wall_h'].to_f
+  wall_t_cm = data['wall_t'].to_f
+  floor_t_cm = data['floor_t'].to_f
+  ceil_t_cm = data['ceil_t'].to_f
+  floor_on = enabled_value?(data['create_floor'])
+  ceiling_on = enabled_value?(data['create_ceiling'])
+
+  raise 'نقاط الغرفة غير صالحة' unless pts.is_a?(Array) && pts.length >= 3 && polygon_valid_for_wall_edit?(pts)
 
   outward = compute_outward_pts(pts, wall_t_cm.cm)
+  raise 'تعذر حساب حدود الحوائط' unless outward && outward.length == pts.length
+
+  # ترتيب التنفيذ مهم: نمسح العناصر المشتقة القديمة أولاً، ثم نبني كل شيء من pts الجديدة.
+  delete_room_parts(room_group, 'حائط')
+  delete_room_parts(room_group, 'أرضية')
+  delete_room_parts(room_group, 'سقف')
+  delete_room_beams(room_group) if respond_to?(:delete_room_beams)
+  delete_room_shatras(room_group) if respond_to?(:delete_room_shatras)
+
   rebuild_room_walls(room_group, pts, outward, wall_h_cm.cm, wall_t_cm.cm,
                      wall_h_cm, wall_t_cm, name, room_uuid)
 
-  delete_room_parts(room_group, 'أرضية')
   rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid) if floor_on && floor_t_cm > 0
 
-  delete_room_parts(room_group, 'سقف')
   if ceiling_on && ceil_t_cm > 0
     build_ceiling(model, room_group.entities, name, room_uuid, outward, pts,
-                  wall_h_cm.cm, ceil_t_cm.cm, ceil_t_cm, room_data)
+                  wall_h_cm.cm, ceil_t_cm.cm, ceil_t_cm, data)
   end
 
   save_room_pts(room_group, pts)
-  save_build_data(room_group, room_data)
+  save_build_data(room_group, data)
   room_group.set_attribute(DICT, 'اسم الغرفة', name)
   room_group.set_attribute(DICT, 'ارتفاع الحائط سم', wall_h_cm)
   room_group.set_attribute(DICT, 'سمك الحائط سم', wall_t_cm)
@@ -1004,10 +1023,17 @@ def rebuild_room_after_wall_edit(room_group, pts, room_data)
   room_group.set_attribute(DICT, 'سمك السقف سم', ceil_t_cm)
   room_group.set_attribute(DICT, 'إنشاء أرضية', floor_on ? 'نعم' : 'لا')
   room_group.set_attribute(DICT, 'إنشاء سقف', ceiling_on ? 'نعم' : 'لا')
+
   rebuild_all_beams(room_group) if respond_to?(:rebuild_all_beams)
   rebuild_all_shatras(room_group) if respond_to?(:rebuild_all_shatras)
   model.active_view.invalidate
   true
+end
+
+def rebuild_room_after_wall_edit(room_group, pts, room_data)
+  synchronize_room_geometry(room_group, pts, room_data)
+rescue => e
+  raise e
 end
 
 def apply_wall_edit(room_group, wall_number, data)
@@ -1397,6 +1423,7 @@ def apply_shatra_calibration(room_group, corner_idx, data)
   room_data = room_data.dup
   model.start_operation('MHD Smart Shatra Calibration', true)
   begin
+    # نبني كل Geometry مرة واحدة من النقاط الجديدة ثم نعيد رسم مرجع الشطرة.
     rebuild_room_after_wall_edit(room_group, new_pts, room_data)
 
     shatras = shatras_from_room(room_group)
@@ -1508,16 +1535,16 @@ end
 
 class ShatraPickTool
   def activate
-    Sketchup.status_text = ts('شطرة الحائط: اضغط بالقرب من أي ركن لتحديد الزاوية')
+    Sketchup.status_text = MHD_RoomBuilder_Context.ts('شطرة الحائط: اضغط على ركن أو قرب نهاية حائط لتحديد الزاوية')
   end
 
   def onLButtonDown(_flags, x, y, view)
     ph = view.pick_helper
     ph.do_pick(x, y)
     ent = ph.best_picked
-    room = find_room_group(ent)
+    room = MHD_RoomBuilder_Context.find_room_group(ent)
     unless room
-      UI.messagebox(ts('اضغط على حائط أو عنصر داخل غرفة MHD.'))
+      UI.messagebox(MHD_RoomBuilder_Context.ts('اضغط على حائط أو عنصر داخل غرفة MHD.'))
       return
     end
 
@@ -1527,13 +1554,27 @@ class ShatraPickTool
       (ent && ent.respond_to?(:bounds) ? ent.bounds.center : nil)
     end
 
-    # إذا تم اختيار حائط، نستخدم أقرب ركن من طرفيه؛ لو العنصر داخلي نستخدم مركز الـ bounds.
-    corner_idx = shatra_corner_index(room, click_pt || Geom::Point3d.new(0,0,0))
+    # لو المستخدم ضغط على حائط، حدد أقرب طرف فعلي للحائط، ثم حوّله إلى فهرس الركن في بيانات الغرفة.
+    corner_idx = nil
+    if ent && ent.respond_to?(:get_attribute) && ent.get_attribute(MHD_RoomBuilder_Context::DICT, 'النوع').to_s == 'حائط'
+      p1s = ent.get_attribute(MHD_RoomBuilder_Context::DICT, 'P1').to_s.split('|').map(&:to_f)
+      p2s = ent.get_attribute(MHD_RoomBuilder_Context::DICT, 'P2').to_s.split('|').map(&:to_f)
+      if p1s.length >= 3 && p2s.length >= 3
+        p1 = Geom::Point3d.new(*p1s[0,3])
+        p2 = Geom::Point3d.new(*p2s[0,3])
+        cp = click_pt || ent.bounds.center
+        picked_point = cp.distance(p1) <= cp.distance(p2) ? p1 : p2
+        corner_idx = MHD_RoomBuilder_Context.shatra_corner_index(room, picked_point)
+      end
+    end
+
+    corner_idx ||= MHD_RoomBuilder_Context.shatra_corner_index(room, click_pt || Geom::Point3d.new(0,0,0))
     unless corner_idx
       UI.messagebox('❌ تعذر تحديد ركن.')
       return
     end
-    open_shatra_dialog(room, corner_idx)
+
+    MHD_RoomBuilder_Context.open_shatra_dialog(room, corner_idx)
   rescue => e
     UI.messagebox("❌ خطأ في أداة الشطرة:\n#{e.message}")
   end
@@ -2760,7 +2801,7 @@ selection = model.selection.to_a
 
   if room_group
     menu.add_separator
-    menu.add_item(ts('⚙️ تعديل المـــطبـــخ')) { open_edit_room_dialog(room_group) }
+    menu.add_item(ts('⚙️ تعديل المــطــبـــخ')) { open_edit_room_dialog(room_group) }
 
     # كمر: يظهر عند تحديد حائط أو كمر
     wall_entity = selection.find do |entity|
