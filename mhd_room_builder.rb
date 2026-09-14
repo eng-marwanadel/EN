@@ -3586,8 +3586,11 @@ ts(html)
 end
 
 def dialog_input
-unless selected_face
-UI.messagebox(ts('حدد Face الأرضية الأول'))
+model = Sketchup.active_model
+face = selected_face
+edges = model.selection.grep(Sketchup::Edge).select(&:valid?)
+unless face || !edges.empty?
+UI.messagebox(ts('حدد Face أو اختر Lines متصلة أولاً'))
 return
 end
 dlg = UI::HtmlDialog.new(
@@ -4064,7 +4067,7 @@ def build_from_data(data)
   else
     pts = selected_line_chain_points
     unless pts && pts.length >= 2
-      UI.messagebox(ts('حدد Line أو مجموعة Lines متصلة أولاً، أو حدد Rectangle/Face.'))
+      UI.messagebox(ts('حدد Lines متصلة تبدأ من أول حائط إلى آخر حائط، أو حدد Rectangle/Face.'))
       return
     end
   end
@@ -4250,7 +4253,7 @@ end
 
 # لا يتم تشغيل أداة رسم الحوائط التفاعلية؛ الرسم يتم من أدوات SketchUp Line / Rectangle ثم بناء الحوائط من الـFace المحدد.
 
-UI.menu('Plugins').add_item(ts('MHD - بناء الحوائط من Line / Rectangle')) do
+UI.menu('Plugins').add_item(ts('MHD - بناء الحوائط من Line / Rectangle / Open Lines')) do
   build
 end
 
