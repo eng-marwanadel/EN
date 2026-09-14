@@ -558,30 +558,92 @@ inst.transform!(tr)
 end
 end
 
+def wall_overrides_from_room(room_group)
+  raw = room_group.get_attribute(DICT, 'wall_overrides_json').to_s
+  return {} if raw.empty?
+  data = JSON.parse(raw) rescue {}
+  return data if data.is_a?(Hash)
+  {}
+rescue
+  {}
+end
+
+def save_wall_overrides(room_group, overrides)
+  room_group.set_attribute(DICT, 'wall_overrides_json', (overrides || {}).to_json)
+  true
+rescue
+  false
+end
+
+def wall_override_for(overrides, index)
+  ov = (overrides || {})[index.to_i.to_s]
+  ov = (overrides || {})[format('%02d', index.to_i + 1)] if ov.nil?
+  ov.is_a?(Hash) ? ov : {}
+rescue
+  {}
+end
+
+def compute_outward_pts_per_wall(pts, default_wall_t_cm, overrides = {})
+  count = pts.length
+  edges = []
+  count.times do |i|
+    j = (i + 1) % count
+    a = pts[i]
+    b = pts[j]
+    d = a.vector_to(b)
+    raise 'حائط بطول غير صالح.' if d.length <= 0.1.mm
+    d.normalize!
+    normal = d.cross(Z_AXIS)
+    normal.normalize!
+    ov = wall_override_for(overrides, i)
+    t_cm = ov['thickness_cm'].to_f
+    t_cm = default_wall_t_cm.to_f if t_cm <= 0.1
+    half = t_cm.cm / 2.0
+    edges << { :a => a, :b => b, :dir => d, :normal => normal, :offset_a => a.offset(normal, half), :offset_b => b.offset(normal, half) }
+  end
+  outward = []
+  count.times do |i|
+    prev = edges[(i - 1) % count]
+    curr = edges[i]
+    inter = Geom.intersect_line_line([prev[:offset_b], prev[:dir]], [curr[:offset_a], curr[:dir]])
+    inter ||= curr[:offset_a]
+    outward << inter
+  end
+  outward
+rescue
+  compute_outward_pts(pts, default_wall_t_cm.to_f.cm)
+end
+
 def rebuild_room_walls(room_group, pts, outward_pts, wall_h, wall_t,
-wall_h_cm, wall_t_cm, room_name, room_uuid)
+wall_h_cm, wall_t_cm, room_name, room_uuid, overrides = nil)
 model = Sketchup.active_model
 count = pts.length
 stamp = Time.now.to_i
+overrides = overrides.is_a?(Hash) ? overrides : wall_overrides_from_room(room_group)
 delete_room_parts(room_group, 'حائط')
 count.times do |i|
 j = (i + 1) % count
-wall_number = format('%02d', i + 1)
-wall_name = "#{ts('حائط')} #{wall_number}"
-wall_def = model.definitions.add("#{room_name}_#{wall_name}_#{stamp}_#{rand(9999)}")
-add_prism(wall_def.entities, pts[i], pts[j], outward_pts[j], outward_pts[i], 0, wall_h)
+ov = wall_override_for(overrides, i)
+local_h_cm = ov['height_cm'].to_f
+local_h_cm = wall_h_cm.to_f if local_h_cm <= 0.1
+local_t_cm = ov['thickness_cm'].to_f
+local_t_cm = wall_t_cm.to_f if local_t_cm <= 0.1
+local_name = ov['name'].to_s.strip
+local_name = "#{ts('حائط')} #{format('%02d', i + 1)}" if local_name.empty?
+wall_def = model.definitions.add("#{room_name}_#{local_name}_#{stamp}_#{rand(9999)}")
+add_prism(wall_def.entities, pts[i], pts[j], outward_pts[j], outward_pts[i], 0, local_h_cm.cm)
 wall_inst = room_group.entities.add_instance(wall_def, Geom::Transformation.new)
-wall_inst.name = wall_name
-wall_inst.layer = tag(model, "#{room_name} | #{wall_name}")
+wall_inst.name = local_name
+wall_inst.layer = tag(model, "#{room_name} | #{local_name}")
 set_attrs(wall_inst, {
 'UUID' => uuid,
 'Room_UUID' => room_uuid,
 'النوع' => 'حائط',
 'اسم الغرفة' => room_name,
 'رقم الحائط' => i + 1,
-'الاسم' => wall_name,
-'الارتفاع سم' => wall_h_cm,
-'السمك سم' => wall_t_cm,
+'الاسم' => local_name,
+'الارتفاع سم' => local_h_cm,
+'السمك سم' => local_t_cm,
 'طول الحائط سم' => pts[i].distance(pts[j]).to_cm.round(2),
 'P1' => pt_to_s(pts[i]),
 'P2' => pt_to_s(pts[j]),
@@ -736,7 +798,7 @@ ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual ||
   end
 
   if wall_t_changed
-    new_outward = compute_outward_pts(pts, wall_t_new.cm)
+    new_outward = compute_outward_pts_per_wall(pts, wall_t_new, wall_overrides_from_room(room_group))
     rebuild_room_walls(room_group, pts, new_outward,
                        wall_h_new.cm, wall_t_new.cm,
                        wall_h_new, wall_t_new, name_new, room_uuid)
@@ -756,7 +818,7 @@ ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual ||
       move_ceiling_by_delta(room_group, delta_h) unless ceiling_needs_rebuild
     end
     if floor_changed
-      current_outward = compute_outward_pts(pts, wall_t_old.cm)
+      current_outward = compute_outward_pts_per_wall(pts, wall_t_old, wall_overrides_from_room(room_group))
       if floor_on_new && floor_t_new > 0
         rebuild_room_floor(room_group, current_outward, floor_t_new.cm,
                            floor_t_new, name_new, room_uuid)
@@ -767,7 +829,7 @@ ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual ||
     if ceiling_needs_rebuild
       delete_room_parts(room_group, 'سقف')
       if ceiling_on_new && ceil_t_new > 0
-        current_outward = compute_outward_pts(pts, wall_t_old.cm)
+        current_outward = compute_outward_pts_per_wall(pts, wall_t_old, wall_overrides_from_room(room_group))
         build_ceiling(model, room_group.entities, name_new, room_uuid,
                       current_outward, pts,
                       wall_h_new.cm, ceil_t_new.cm, ceil_t_new, new_data)
@@ -821,7 +883,7 @@ ceil_t_cm  = new_data['ceil_t'].to_f
 floor_on   = enabled_value?(new_data['create_floor'])
 ceiling_on = enabled_value?(new_data['create_ceiling'])
 room_group.entities.clear!
-outward = compute_outward_pts(pts, wall_t_cm.cm)
+outward = compute_outward_pts_per_wall(pts, wall_t_cm, wall_overrides)
 rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid) if floor_on && floor_t_cm > 0
 if ceiling_on && ceil_t_cm > 0
 build_ceiling(model, room_group.entities, name, room_uuid,
@@ -830,7 +892,7 @@ wall_h_cm.cm, ceil_t_cm.cm, ceil_t_cm, new_data)
 end
 rebuild_room_walls(room_group, pts, outward,
 wall_h_cm.cm, wall_t_cm.cm,
-wall_h_cm, wall_t_cm, name, room_uuid)
+wall_h_cm, wall_t_cm, name, room_uuid, wall_overrides)
 rebuild_all_beams(room_group) if respond_to?(:rebuild_all_beams)
 room_group.name = name
 room_group.layer = tag(model, name)
@@ -840,6 +902,7 @@ room_group.set_attribute(DICT, 'ارتفاع الحائط سم', wall_h_cm)
 room_group.set_attribute(DICT, 'سمك الحائط سم', wall_t_cm)
 room_group.set_attribute(DICT, 'سمك الأرضية سم', floor_t_cm)
 room_group.set_attribute(DICT, 'سمك السقف سم', ceil_t_cm)
+save_wall_overrides(room_group, wall_overrides)
 model.commit_operation
 model.active_view.invalidate
 UI.messagebox("✅ #{ts('تم إعادة بناء الغرفة بنجاح')}")
@@ -1204,10 +1267,11 @@ def synchronize_room_geometry(room_group, pts, room_data)
   ceil_t_cm = data['ceil_t'].to_f
   floor_on = enabled_value?(data['create_floor'])
   ceiling_on = enabled_value?(data['create_ceiling'])
+  wall_overrides = wall_overrides_from_room(room_group)
 
   raise 'نقاط الغرفة غير صالحة' unless pts.is_a?(Array) && pts.length >= 3 && polygon_valid_for_wall_edit?(pts)
 
-  outward = compute_outward_pts(pts, wall_t_cm.cm)
+  outward = compute_outward_pts_per_wall(pts, wall_t_cm, wall_overrides)
   raise 'تعذر حساب حدود الحوائط' unless outward && outward.length == pts.length
 
   # ترتيب التنفيذ مهم: نمسح العناصر المشتقة القديمة أولاً، ثم نبني كل شيء من pts الجديدة.
@@ -1218,7 +1282,7 @@ def synchronize_room_geometry(room_group, pts, room_data)
   delete_room_shatras(room_group) if respond_to?(:delete_room_shatras)
 
   rebuild_room_walls(room_group, pts, outward, wall_h_cm.cm, wall_t_cm.cm,
-                     wall_h_cm, wall_t_cm, name, room_uuid)
+                     wall_h_cm, wall_t_cm, name, room_uuid, wall_overrides)
 
   rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid) if floor_on && floor_t_cm > 0
   normalize_room_floor_appearance(room_group) if respond_to?(:normalize_room_floor_appearance)
@@ -1237,6 +1301,7 @@ def synchronize_room_geometry(room_group, pts, room_data)
   room_group.set_attribute(DICT, 'سمك السقف سم', ceil_t_cm)
   room_group.set_attribute(DICT, 'إنشاء أرضية', floor_on ? 'نعم' : 'لا')
   room_group.set_attribute(DICT, 'إنشاء سقف', ceiling_on ? 'نعم' : 'لا')
+  save_wall_overrides(room_group, wall_overrides)
 
   rebuild_all_beams(room_group) if respond_to?(:rebuild_all_beams)
   rebuild_all_shatras(room_group) if respond_to?(:rebuild_all_shatras)
@@ -1283,33 +1348,41 @@ def apply_wall_edit(room_group, wall_number, data)
   end
 
   room_data = room_data.dup
-  room_data['wall_h'] = new_height
-  room_data['wall_t'] = new_thickness
 
   old_pts = room_pts_from_group(room_group)
+  overrides = wall_overrides_from_room(room_group)
   new_pts = build_smart_wall_edit_points(room_group, wall_number, new_length, anchor, edit_mode)
   unless new_pts && polygon_valid_for_wall_edit?(new_pts)
     UI.messagebox(ts('القيمة الجديدة أدت إلى شكل غرفة غير صالح. جرّب طولاً أكبر أو نقطة تثبيت مختلفة.'))
     return false
   end
 
+  if enabled_value?(data['inherit_room_defaults'])
+    overrides.delete(wall_number.to_i.to_s)
+  else
+    overrides[wall_number.to_i.to_s] = {
+      'height_cm' => new_height,
+      'thickness_cm' => new_thickness,
+      'name' => new_name
+    }
+  end
+
   model = Sketchup.active_model
   model.start_operation('MHD Parametric Wall Edit', true)
   begin
     old_wall_name = rec['name']
+    save_wall_overrides(room_group, overrides)
     remove_legacy_source_floor_geometry(old_pts)
     rebuild_room_after_wall_edit(room_group, new_pts, room_data)
 
-    if new_name != old_wall_name
-      wall = find_wall_in_room(room_group, wall_number)
-      if wall && wall.valid?
-        wall.name = new_name
-        wall.set_attribute(DICT, 'الاسم', new_name)
-        room_name = room_data['room_name'].to_s
-        wall.layer = tag(model, "#{room_name} | #{new_name}")
-      end
-      rename_beam_tags_for_room(room_group) if respond_to?(:rename_beam_tags_for_room)
+    wall = find_wall_in_room(room_group, wall_number)
+    if wall && wall.valid?
+      wall.name = new_name
+      wall.set_attribute(DICT, 'الاسم', new_name)
+      room_name = room_data['room_name'].to_s
+      wall.layer = tag(model, "#{room_name} | #{new_name}")
     end
+    rename_beam_tags_for_room(room_group) if respond_to?(:rename_beam_tags_for_room)
 
     model.commit_operation
     UI.messagebox("✅ #{ts('تم تعديل الحائط ديناميكياً')}\\n#{ts('الطول')}: #{new_length.round(2)} سم")
@@ -1345,13 +1418,18 @@ def open_wall_dialog(target)
   end
 
   v = wall_edit_dialog_values(rec)
+  defaults = build_data_from_group(room_group) || {}
+  room_data_default_height = defaults['wall_h'].to_f > 0.1 ? defaults['wall_h'].to_f : v['height_cm']
+  room_data_default_thickness = defaults['wall_t'].to_f > 0.1 ? defaults['wall_t'].to_f : v['thickness_cm']
+  current_overrides = wall_overrides_from_room(room_group)
+  has_override = current_overrides.key?(wall_number.to_i.to_s)
   dlg = UI::HtmlDialog.new(
     dialog_title: "#{ts('تعديل الحائط')} - MHDESIGN",
     preferences_key: PREF_KEY + '_WALL_EDIT',
-    scrollable: false,
+    scrollable: true,
     resizable: true,
-    width: 390,
-    height: 610,
+    width: 410,
+    height: 720,
     style: UI::HtmlDialog::STYLE_DIALOG
   )
 
@@ -1384,9 +1462,10 @@ label{font-weight:900;font-size:13px}input,select{width:100%;height:34px;backgro
 <div class="row"><label>نمط التعديل</label><select id="edit_mode"><option value="single">🎯 حائط واحد فقط — لا تحرك المقابل</option><option value="auto">🧠 ذكي — حافظ على استقامة الغرفة</option><option value="opposite">↔️ الحائط + المقابل معًا</option></select></div>
 <div class="row"><label>ارتفاع الحائط سم</label><input id="height" type="number" step="0.1" min="1" value="#{v['height_cm']}"></div>
 <div class="row"><label>سمك الحائط سم</label><input id="thickness" type="number" step="0.1" min="0.1" value="#{v['thickness_cm']}"></div>
+<div class="row"><label>ربط الحائط</label><select id="inherit"><option value="no"#{has_override ? ' selected' : ''}>🔧 مستقل — احفظ مقاسات هذا الحائط</option><option value="yes"#{has_override ? '' : ' selected'}>🔗 مرتبط بالغرفة — يرث الإعدادات العامة</option></select></div>
 <div class="row"><label>اسم الحائط</label><input id="name" type="text" value="#{safe_name}"></div>
 </div>
-<div class="card"><b>⚡ تحديث ديناميكي</b><div class="hint">بعد الحفظ يتم إعادة حساب شكل الغرفة، الأرضية، السقف، والحوائط. الكمرات المرتبطة بالحائط يعاد بناؤها تلقائياً على الشكل الجديد.</div></div>
+<div class="card"><b>⚡ تحكم بارامتري كامل</b><div class="hint">هذا الحائط يحتفظ بطوله وارتفاعه وسمكه واسمه كبيانات مستقلة. عند تغييره يعاد بناء الحائط، الأرضية، السقف، الكمرات والشطرات من نفس Room Geometry.</div><div class="row"><label>إعادة لقيم الغرفة</label><button class="btn cancel" type="button" onclick="resetDefaults()">↺ إعادة الضبط</button></div></div>
 <div class="footer"><button class="btn save" onclick="submitData()">💾 تطبيق التعديل</button><button class="btn cancel" onclick="sketchup.cancel()">إغلاق</button></div>
 </div>
 <script>
@@ -1394,8 +1473,9 @@ function updateBig(){document.getElementById('length_big').textContent=document.
 function syncRange(){let n=parseFloat(document.getElementById('length').value||1);n=Math.max(1,Math.min(2000,n));document.getElementById('length_range').value=n;updateBig();}
 function syncInput(){document.getElementById('length').value=document.getElementById('length_range').value;updateBig();}
 function step(v){let n=parseFloat(document.getElementById('length').value||1);n=Math.max(1,n+v);document.getElementById('length').value=n;syncRange();}
+function resetDefaults(){document.getElementById('height').value=#{room_data_default_height};document.getElementById('thickness').value=#{room_data_default_thickness};document.getElementById('name').value='';document.getElementById('inherit').value='yes';syncRange();}
 function submitData(){
- let data={length_cm:parseFloat(document.getElementById('length').value),height_cm:parseFloat(document.getElementById('height').value),thickness_cm:parseFloat(document.getElementById('thickness').value),name:document.getElementById('name').value,anchor:document.getElementById('anchor').value,edit_mode:document.getElementById('edit_mode').value};
+ let data={length_cm:parseFloat(document.getElementById('length').value),height_cm:parseFloat(document.getElementById('height').value),thickness_cm:parseFloat(document.getElementById('thickness').value),name:document.getElementById('name').value,inherit_room_defaults:document.getElementById('inherit').value,anchor:document.getElementById('anchor').value,edit_mode:document.getElementById('edit_mode').value};
  if(!Number.isFinite(data.length_cm)||!Number.isFinite(data.height_cm)||!Number.isFinite(data.thickness_cm)){alert('راجع المقاسات');return;}
  sketchup.submit(JSON.stringify(data));
 }
@@ -1554,7 +1634,8 @@ def create_wall_draw_session(data)
     'طريقة حساب السقوط' => data['drop_reference'].to_s,
     'wall_draw_points' => [].to_json,
     'shatras_json' => [].to_json,
-    'beams_json' => [].to_json
+    'beams_json' => [].to_json,
+    'wall_overrides_json' => {}.to_json
   })
   group
 rescue => e
@@ -1636,6 +1717,9 @@ class WallDrawTool
     @active = false
     @snapped_angle = nil
     @snap_name = nil
+    @snap_target = nil
+    @snap_type = nil
+    @snap_distance_cm = nil
   end
 
   def activate
@@ -1752,6 +1836,15 @@ class WallDrawTool
         view.draw_points([@last_cursor_point], 12, 1, Sketchup::Color.new(0, 220, 255))
       end
 
+      # Smart snap target marker: green = exact connection, cyan/yellow = alignment.
+      if @snap_target
+        marker_color = (@snap_type.to_s == 'نقطة اتصال' || @snap_type.to_s == 'نقطة حائط') ? Sketchup::Color.new(0, 255, 90) : Sketchup::Color.new(0, 220, 255)
+        view.draw_points([@snap_target], 16, 2, marker_color)
+        if @snap_type
+          view.draw_text(@snap_target.offset(Z_AXIS, 12.cm), "🧲 #{@snap_type}") rescue nil
+        end
+      end
+
       # Close hint when near the starting point.
       if @points.length >= 3 && @last_cursor_point && @last_cursor_point.distance(@points.first) <= 25.cm
         view.drawing_color = Sketchup::Color.new(0, 255, 120)
@@ -1779,6 +1872,7 @@ class WallDrawTool
     end
     start = @points[-1]
     cursor = apply_smart_snap(start, p)
+    cursor = apply_point_and_axis_snap(start, cursor)
     if @typed_length_cm && @typed_length_cm > 0
       vec = start.vector_to(cursor)
       if vec.length > 0.1.mm
@@ -1811,6 +1905,7 @@ class WallDrawTool
 
     start = @points[-1]
     target = @preview_point || apply_smart_snap(start, p)
+    target = apply_point_and_axis_snap(start, target)
     if @points.length >= 3 && target.distance(@points.first) <= 10.cm
       target = @points.first
       commit_segment(target, view)
@@ -1889,6 +1984,9 @@ class WallDrawTool
   def apply_smart_snap(start, point)
     @snapped_angle = nil
     @snap_name = nil
+    @snap_target = nil
+    @snap_type = nil
+    @snap_distance_cm = nil
     vec = start.vector_to(point)
     return point if vec.length <= 0.1.mm
     raw_angle = Math.atan2(vec.y, vec.x)
@@ -1906,6 +2004,73 @@ class WallDrawTool
     else
       point
     end
+  rescue
+    point
+  end
+
+  def apply_point_and_axis_snap(start, point)
+    @snap_target = nil
+    @snap_type = nil
+    @snap_distance_cm = nil
+    return point unless start && point
+
+    # 1) Hard snap to known room points / endpoints.
+    candidates = @points.dup
+    if @group && @group.valid?
+      begin
+        @group.entities.to_a.each do |e|
+          next unless e.valid?
+          next unless e.respond_to?(:get_attribute)
+          next unless e.get_attribute(MHD_RoomBuilder_Context::DICT, 'النوع').to_s == 'حائط'
+          %w[P1 P2].each do |key|
+            raw = e.get_attribute(MHD_RoomBuilder_Context::DICT, key).to_s
+            next if raw.empty?
+            arr = raw.split('|').map(&:to_f)
+            candidates << Geom::Point3d.new(arr[0], arr[1], arr[2] || 0.0) if arr.length >= 2
+          end
+        end
+      rescue
+      end
+    end
+
+    snap_radius = 22.0.cm
+    nearest = candidates.min_by { |c| c.distance(point) }
+    if nearest && nearest.distance(point) <= snap_radius
+      @snap_target = nearest
+      @snap_type = 'نقطة اتصال'
+      @snap_distance_cm = nearest.distance(point).to_cm
+      @snap_name = 'Snap نقطة'
+      return Geom::Point3d.new(nearest.x, nearest.y, 0)
+    end
+
+    # 2) Smart horizontal/vertical alignment against existing points.
+    axis_threshold = 12.0.cm
+    best = point
+    best_d = Float::INFINITY
+    best_type = nil
+    @points.each do |q|
+      dx = (point.x - q.x).abs
+      dy = (point.y - q.y).abs
+      if dx <= axis_threshold && dx < best_d
+        best = Geom::Point3d.new(q.x, point.y, 0)
+        best_d = dx
+        best_type = 'محاذاة رأسية'
+      end
+      if dy <= axis_threshold && dy < best_d
+        best = Geom::Point3d.new(point.x, q.y, 0)
+        best_d = dy
+        best_type = 'محاذاة أفقية'
+      end
+    end
+    if best_type
+      @snap_target = best
+      @snap_type = best_type
+      @snap_distance_cm = best_d.to_f.to_cm
+      @snap_name = best_type
+      return best
+    end
+
+    point
   rescue
     point
   end
@@ -1934,14 +2099,30 @@ class WallDrawTool
     start = @points[-1]
     return if target.distance(start) <= 0.5.cm
 
-    # IMPORTANT: During interactive drawing we store only parametric points.
-    # Permanent geometry is created once, from the complete polygon, when the room is closed.
+    ensure_session!
+    begin
+      # Build a REAL wall immediately. The final room synchronization will rebuild
+      # these walls from the same points, so live drawing and the parametric model
+      # share one source of truth.
+      wall = MHD_RoomBuilder_Context.wall_draw_add_segment(
+        @group, start, target, @data['wall_h'].to_f, @data['wall_t'].to_f, @wall_number
+      )
+      raise 'تعذر إنشاء الحائط الفعلي.' unless wall && wall.valid?
+    rescue => e
+      UI.messagebox("تعذر إنشاء الحائط رقم #{@wall_number}:\n#{e.class}: #{e.message}") rescue nil
+      return
+    end
+
     @points << target
     @wall_number += 1
     @typed_length_cm = nil
     @preview_point = target
+    @snap_target = target
+    @snap_type = 'نقطة حائط'
+    @snap_name = 'Snap نقطة'
+    @snap_distance_cm = 0.0
     save_points
-    set_status("✅ حائط #{@wall_number - 1} تم تثبيته | حرّك الماوس لرسم الحائط التالي")
+    set_status("✅ حائط #{@wall_number - 1} تم إنشاؤه فعليًا | حرّك الماوس لرسم الحائط التالي")
     view.invalidate if view
   end
 
@@ -1986,6 +2167,9 @@ class WallDrawTool
     @wall_number = [@wall_number - 1, 1].max
     @typed_length_cm = nil
     @preview_point = @points.last
+    @snap_target = @points.last
+    @snap_type = @points.last ? 'نقطة حائط' : nil
+    @snap_name = @points.last ? 'Snap نقطة' : nil
     save_points
     update_status
     view.invalidate if view
