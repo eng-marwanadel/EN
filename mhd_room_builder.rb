@@ -4142,8 +4142,12 @@ def build_from_data(data)
   wall_t_cm  = data['wall_t'].to_f
   floor_t_cm = data['floor_t'].to_f
   ceil_t_cm  = data['ceil_t'].to_f
-  create_floor = enabled_value?(data['create_floor']) && closed
-  create_ceiling = enabled_value?(data['create_ceiling']) && closed
+  # Keep the user's UI choices authoritative. For an open Edge path with
+  # 3+ points, a temporary closing segment is used ONLY for Floor/Ceiling
+  # construction; the actual wall path remains open.
+  can_enclose = pts.length >= 3
+  create_floor = enabled_value?(data['create_floor']) && (closed || can_enclose)
+  create_ceiling = enabled_value?(data['create_ceiling']) && (closed || can_enclose)
   ceiling_pattern = data['ceiling_pattern'].to_s
 
   if wall_h_cm <= 0 || wall_t_cm <= 0
@@ -4181,8 +4185,8 @@ def build_from_data(data)
       'سمك الحائط سم' => wall_t_cm,
       'سمك الأرضية سم' => floor_t_cm,
       'سمك السقف سم' => ceil_t_cm,
-      'إنشاء أرضية' => create_floor ? 'نعم' : 'لا',
-      'إنشاء سقف' => create_ceiling ? 'نعم' : 'لا',
+      'إنشاء أرضية' => enabled_value?(data['create_floor']) ? 'نعم' : 'لا',
+      'إنشاء سقف' => enabled_value?(data['create_ceiling']) ? 'نعم' : 'لا',
       'مسار مفتوح' => closed ? 'لا' : 'نعم',
       'نمط السقف' => ceiling_pattern,
       'طريقة حساب السقوط' => data['drop_reference'].to_s,
@@ -4193,11 +4197,28 @@ def build_from_data(data)
     room_group.set_attribute(DICT, 'beams_json', [].to_json)
 
     outward_pts, wall_quads = build_wall_geometry_data(pts, wall_t, closed)
+
+    # For open Edge paths, build a closed auxiliary outline for Floor/Ceiling
+    # without turning the missing closing side into a wall. This keeps the
+    # user's Edge-based walls open while still honoring all checked build options.
+    enclosure_pts = pts.dup
+    enclosure_closed = closed
+    if !closed && can_enclose
+      enclosure_pts = pts.dup
+      enclosure_closed = true
+    end
+    enclosure_outward = if enclosure_closed
+      compute_outward_pts_per_wall(enclosure_pts, wall_t, nil)
+    end
+
+    room_group.set_attribute(DICT, 'enclosure_pts_json', enclosure_pts.map { |p| [p.x.to_f, p.y.to_f, p.z.to_f] }.to_json) if enclosure_closed
+    room_group.set_attribute(DICT, 'Floor_Ceiling_Enclosure', enclosure_closed ? 'نعم' : 'لا')
+
     room_ents = room_group.entities
 
-    if create_floor && floor_t > 0 && outward_pts
+    if create_floor && floor_t > 0 && enclosure_outward
       floor_def = model.definitions.add("#{room_name}_أرضية_#{stamp}_#{rand(9999)}")
-      floor_face = floor_def.entities.add_face(outward_pts)
+      floor_face = floor_def.entities.add_face(enclosure_outward)
       if floor_face
         floor_face.reverse! if floor_face.normal.z < 0
         floor_face.pushpull(-floor_t)
@@ -4214,9 +4235,9 @@ def build_from_data(data)
       end
     end
 
-    if create_ceiling && ceil_t > 0 && outward_pts
-      build_ceiling(model, room_ents, room_name, room_uuid, outward_pts,
-                    pts, wall_h, ceil_t, ceil_t_cm, data)
+    if create_ceiling && ceil_t > 0 && enclosure_outward
+      build_ceiling(model, room_ents, room_name, room_uuid, enclosure_outward,
+                    enclosure_pts, wall_h, ceil_t, ceil_t_cm, data)
     end
 
     wall_quads.each_with_index do |quad, i|
@@ -4255,7 +4276,7 @@ def build_from_data(data)
     # are intentionally preserved as a hidden construction reference.
     remove_legacy_source_floor_geometry(pts) if face && closed
     model.commit_operation
-    UI.messagebox(ts(closed ? 'تم بناء الغرفة والحائط من الـFace بنجاح' : 'تم بناء الحوائط من الـLines بنجاح — المسار مفتوح ويمكن إكماله لاحقاً'))
+    UI.messagebox(ts(closed ? 'تم بناء الغرفة والحوائط وكل العناصر المحددة بنجاح' : 'تم بناء الحوائط والمسار مفتوح — وتم إنشاء الأرضية والسقف من حدود الإغلاق الافتراضية حسب الإعدادات'))
   rescue => e
     model.abort_operation rescue nil
     UI.messagebox("Error:\n#{e.message}")
