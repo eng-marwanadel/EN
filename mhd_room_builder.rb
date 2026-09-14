@@ -3586,13 +3586,16 @@ ts(html)
 end
 
 def dialog_input
-model = Sketchup.active_model
-face = selected_face
-edges = model.selection.grep(Sketchup::Edge).select(&:valid?)
-unless face || !edges.empty?
-UI.messagebox(ts('حدد Face أو اختر Lines متصلة أولاً'))
-return
-end
+  model = Sketchup.active_model
+  face = selected_face
+  edges = model.selection.grep(Sketchup::Edge).select(&:valid?)
+
+  # The builder works from either a Face (Rectangle/polygon) OR raw SketchUp Edges.
+  # Never require a Face for line-based wall construction.
+  unless face || !edges.empty?
+    UI.messagebox(ts('حدد Edges/Lines أو Face ثم شغّل بناء الحوائط.'))
+    return nil
+  end
 dlg = UI::HtmlDialog.new(
 dialog_title: ts('بناء الحوائط'),
 preferences_key: PREF_KEY,
@@ -3958,49 +3961,78 @@ def selected_line_chain_points
   edges = model.selection.grep(Sketchup::Edge).select(&:valid?)
   return nil if edges.empty?
 
-  # Build an undirected graph from the selected Line edges.
+  # Build an undirected graph from the selected Edges.
   adjacency = Hash.new { |h, k| h[k] = [] }
   edges.each do |e|
     a = e.start.position
     b = e.end.position
-    adjacency[a.to_a] << b
-    adjacency[b.to_a] << a
+    ak = a.to_a.map(&:to_f)
+    bk = b.to_a.map(&:to_f)
+    adjacency[ak] << bk unless adjacency[ak].any? { |v| v == bk }
+    adjacency[bk] << ak unless adjacency[bk].any? { |v| v == ak }
   end
 
-  # Accept only one connected chain / loop. Multiple disconnected selections
-  # are ambiguous and should not silently create unrelated rooms.
-  start_key = adjacency.keys.find { |k| adjacency[k].length == 1 }
-  start_key ||= adjacency.keys.first
-  return nil unless start_key
+  # Reject disconnected selections instead of silently building partial walls.
+  all_keys = adjacency.keys
+  return nil if all_keys.empty?
+  seen = {}
+  stack = [all_keys.first]
+  until stack.empty?
+    k = stack.pop
+    next if seen[k]
+    seen[k] = true
+    adjacency[k].each { |n| stack << n unless seen[n] }
+  end
+  return nil unless seen.length == all_keys.length
 
+  # Start from an endpoint when available; otherwise use the first vertex of a loop.
+  start_key = adjacency.keys.find { |k| adjacency[k].length == 1 } || adjacency.keys.first
   ordered = []
   visited_edges = {}
   current_key = start_key
-  previous_key = nil
   safety = 0
 
   loop do
-    ordered << Geom::Point3d.new(current_key)
+    ordered << Geom::Point3d.new(*current_key)
     neighbors = adjacency[current_key]
     candidates = neighbors.reject do |nk|
-      a = current_key
-      b = nk
-      edge_key = [a, b].sort_by { |v| v.join(',') }
-      visited_edges[edge_key]
+      edge_key = [current_key, nk].sort_by { |v| v.join(',') }
+      visited_edges.key?(edge_key)
     end
 
     break if candidates.empty?
+
+    # Prefer the continuation that is most geometrically consistent with the previous edge.
     next_key = candidates.first
+    if ordered.length >= 2
+      prev = ordered[-2]
+      cur = ordered[-1]
+      base = prev.vector_to(cur)
+      candidates.sort_by! do |nk|
+        nxt = cur.vector_to(Geom::Point3d.new(*nk))
+        if base.length > 0 && nxt.length > 0
+          base.normalize!
+          nxt.normalize!
+          1.0 - [[base.dot(nxt), -1.0].max, 1.0].min.abs
+        else
+          1.0
+        end
+      end
+      next_key = candidates.first
+    end
+
     edge_key = [current_key, next_key].sort_by { |v| v.join(',') }
     visited_edges[edge_key] = true
-    previous_key = current_key
     current_key = next_key
     safety += 1
-    break if safety > edges.length + 2
     break if current_key == start_key
+    break if safety > edges.length + 2
   end
 
-  ordered
+  ordered = ordered.each_with_object([]) do |pt, arr|
+    arr << pt unless arr.any? { |q| q.distance(pt) < 0.001 }
+  end
+  ordered.length >= 2 ? ordered : nil
 rescue
   nil
 end
@@ -4251,9 +4283,9 @@ selection = model.selection.to_a
   end
 end
 
-# لا يتم تشغيل أداة رسم الحوائط التفاعلية؛ الرسم يتم من أدوات SketchUp Line / Rectangle ثم بناء الحوائط من الـFace المحدد.
+# لا يتم تشغيل أداة رسم حوائط تفاعلية؛ الرسم يتم من أدوات SketchUp Line / Rectangle أو أي Edges محددة ثم يتم بناء الحوائط مباشرة.
 
-UI.menu('Plugins').add_item(ts('MHD - بناء الحوائط من Line / Rectangle / Open Lines')) do
+UI.menu('Plugins').add_item(ts('MHD - بناء الحوائط من Edges / Line / Rectangle')) do
   build
 end
 
