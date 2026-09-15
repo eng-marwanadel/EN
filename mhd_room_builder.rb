@@ -1,5 +1,5 @@
 # encoding: UTF-8
-# MHD Room Builder v25.0 - Line/Rectangle Build Workflow
+# MHD Room Builder v4.0 - Smart Edit Engine
 # SketchUp Ruby Plugin
 
 require 'sketchup.rb'
@@ -73,8 +73,6 @@ def longitudinal_value?(value)
 end
 
 def tag(model, name)
-name = name.to_s
-name = 'MHD' if name.strip.empty?
 model.layers[name] || model.layers.add(name)
 end
 
@@ -558,92 +556,30 @@ inst.transform!(tr)
 end
 end
 
-def wall_overrides_from_room(room_group)
-  raw = room_group.get_attribute(DICT, 'wall_overrides_json').to_s
-  return {} if raw.empty?
-  data = JSON.parse(raw) rescue {}
-  return data if data.is_a?(Hash)
-  {}
-rescue
-  {}
-end
-
-def save_wall_overrides(room_group, overrides)
-  room_group.set_attribute(DICT, 'wall_overrides_json', (overrides || {}).to_json)
-  true
-rescue
-  false
-end
-
-def wall_override_for(overrides, index)
-  ov = (overrides || {})[index.to_i.to_s]
-  ov = (overrides || {})[format('%02d', index.to_i + 1)] if ov.nil?
-  ov.is_a?(Hash) ? ov : {}
-rescue
-  {}
-end
-
-def compute_outward_pts_per_wall(pts, default_wall_t_cm, overrides = {})
-  count = pts.length
-  edges = []
-  count.times do |i|
-    j = (i + 1) % count
-    a = pts[i]
-    b = pts[j]
-    d = a.vector_to(b)
-    raise 'حائط بطول غير صالح.' if d.length <= 0.1.mm
-    d.normalize!
-    normal = d.cross(Z_AXIS)
-    normal.normalize!
-    ov = wall_override_for(overrides, i)
-    t_cm = ov['thickness_cm'].to_f
-    t_cm = default_wall_t_cm.to_f if t_cm <= 0.1
-    half = t_cm.cm / 2.0
-    edges << { :a => a, :b => b, :dir => d, :normal => normal, :offset_a => a.offset(normal, half), :offset_b => b.offset(normal, half) }
-  end
-  outward = []
-  count.times do |i|
-    prev = edges[(i - 1) % count]
-    curr = edges[i]
-    inter = Geom.intersect_line_line([prev[:offset_b], prev[:dir]], [curr[:offset_a], curr[:dir]])
-    inter ||= curr[:offset_a]
-    outward << inter
-  end
-  outward
-rescue
-  compute_outward_pts(pts, default_wall_t_cm.to_f.cm)
-end
-
 def rebuild_room_walls(room_group, pts, outward_pts, wall_h, wall_t,
-wall_h_cm, wall_t_cm, room_name, room_uuid, overrides = nil)
+wall_h_cm, wall_t_cm, room_name, room_uuid)
 model = Sketchup.active_model
 count = pts.length
 stamp = Time.now.to_i
-overrides = overrides.is_a?(Hash) ? overrides : wall_overrides_from_room(room_group)
 delete_room_parts(room_group, 'حائط')
 count.times do |i|
 j = (i + 1) % count
-ov = wall_override_for(overrides, i)
-local_h_cm = ov['height_cm'].to_f
-local_h_cm = wall_h_cm.to_f if local_h_cm <= 0.1
-local_t_cm = ov['thickness_cm'].to_f
-local_t_cm = wall_t_cm.to_f if local_t_cm <= 0.1
-local_name = ov['name'].to_s.strip
-local_name = "#{ts('حائط')} #{format('%02d', i + 1)}" if local_name.empty?
-wall_def = model.definitions.add("#{room_name}_#{local_name}_#{stamp}_#{rand(9999)}")
-add_prism(wall_def.entities, pts[i], pts[j], outward_pts[j], outward_pts[i], 0, local_h_cm.cm)
+wall_number = format('%02d', i + 1)
+wall_name = "#{ts('حائط')} #{wall_number}"
+wall_def = model.definitions.add("#{room_name}_#{wall_name}_#{stamp}_#{rand(9999)}")
+add_prism(wall_def.entities, pts[i], pts[j], outward_pts[j], outward_pts[i], 0, wall_h)
 wall_inst = room_group.entities.add_instance(wall_def, Geom::Transformation.new)
-wall_inst.name = local_name
-wall_inst.layer = tag(model, "#{room_name} | #{local_name}")
+wall_inst.name = wall_name
+wall_inst.layer = tag(model, "#{room_name} | #{wall_name}")
 set_attrs(wall_inst, {
 'UUID' => uuid,
 'Room_UUID' => room_uuid,
 'النوع' => 'حائط',
 'اسم الغرفة' => room_name,
 'رقم الحائط' => i + 1,
-'الاسم' => local_name,
-'الارتفاع سم' => local_h_cm,
-'السمك سم' => local_t_cm,
+'الاسم' => wall_name,
+'الارتفاع سم' => wall_h_cm,
+'السمك سم' => wall_t_cm,
 'طول الحائط سم' => pts[i].distance(pts[j]).to_cm.round(2),
 'P1' => pt_to_s(pts[i]),
 'P2' => pt_to_s(pts[j]),
@@ -653,110 +589,40 @@ set_attrs(wall_inst, {
 end
 end
 
-
-def stable_floor_material(model)
-  name = 'MHD Floor Stable Light'
-  mat = model.materials[name] || model.materials.add(name)
-  begin
-    mat.color = Sketchup::Color.new(235, 235, 235)
-    mat.alpha = 1.0 if mat.respond_to?(:alpha=)
-  rescue
-  end
-  mat
-rescue
-  nil
-end
-
-def capture_floor_materials(room_group)
-  snap = { 'front' => nil, 'back' => nil }
-  return snap unless room_group && room_group.valid?
-  floor = room_group.entities.to_a.find do |e|
-    e.valid? && (e.is_a?(Sketchup::ComponentInstance) || e.is_a?(Sketchup::Group)) &&
-      e.get_attribute(DICT, 'النوع').to_s == 'أرضية'
-  end
-  return snap unless floor
-  faces = if floor.is_a?(Sketchup::ComponentInstance)
-            floor.definition.entities.grep(Sketchup::Face)
-          else
-            floor.entities.grep(Sketchup::Face)
-          end
-  top = faces.find { |f| f.valid? && f.normal.z > 0.9 } || faces.first
-  if top
-    snap['front'] = top.material
-    snap['back'] = top.back_material
-  end
-  snap
-rescue
-  { 'front' => nil, 'back' => nil }
-end
-
-def restore_floor_materials(room_group, snap)
-  return true unless room_group && room_group.valid? && snap.is_a?(Hash)
-  floor = room_group.entities.to_a.find do |e|
-    e.valid? && (e.is_a?(Sketchup::ComponentInstance) || e.is_a?(Sketchup::Group)) &&
-      e.get_attribute(DICT, 'النوع').to_s == 'أرضية'
-  end
-  return false unless floor
-  faces = if floor.is_a?(Sketchup::ComponentInstance)
-            floor.definition.entities.grep(Sketchup::Face)
-          else
-            floor.entities.grep(Sketchup::Face)
-          end
-  faces.each do |face|
-    next unless face.valid?
-    face.material = snap['front']
-    face.back_material = snap['back']
-  end
-  true
-rescue
-  false
-end
-
 def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, room_uuid)
   model = Sketchup.active_model
-  preserved = capture_floor_materials(room_group)
   delete_room_parts(room_group, 'أرضية')
   return if floor_t.to_f <= 0 || !outward_pts || outward_pts.length < 3
 
+  # الأرضية دائماً تُبنى من Room Geometry الحالية فقط وعلى Z=0.
   pts = outward_pts.map { |p| Geom::Point3d.new(p.x, p.y, 0) }
   return unless polygon_usable?(pts)
 
   stamp = Time.now.to_i
   floor_def = model.definitions.add("#{room_name}_أرضية_#{stamp}_#{rand(99999)}")
-  ents = floor_def.entities
-  face = ents.add_face(pts)
-  return unless face
+  floor_face = floor_def.entities.add_face(pts)
+  return unless floor_face
+  floor_face.reverse! if floor_face.normal.z < 0
+  floor_face.pushpull(-floor_t)
 
-  # Always keep the visible top face facing +Z.
-  face.reverse! if face.normal.z < 0
-  face.pushpull(-floor_t.to_f)
-
-  # Preserve the user's current floor appearance. When the previous floor had
-  # no explicit material, leave it unmaterialized so SketchUp uses its normal face color.
-  front = preserved['front']
-  back  = preserved['back']
-  stable = stable_floor_material(model)
-  front ||= stable
-  back  ||= front
-  faces = ents.grep(Sketchup::Face)
-  faces.each do |f|
-    next unless f.valid?
+  # مادة مستقرة للأرضية حتى لا تتحول للون الأسود عند إعادة بناء الركن/الشطرة.
+  floor_mat_name = 'MHD Floor Neutral'
+  floor_mat = model.materials[floor_mat_name] || model.materials.add(floor_mat_name)
+  begin
+    floor_mat.color = Sketchup::Color.new(225, 225, 225)
+    floor_mat.alpha = 1.0 if floor_mat.respond_to?(:alpha=)
+  rescue
+  end
+  floor_def.entities.grep(Sketchup::Face).each do |face|
     begin
-      if f.normal.z > 0.5
-        f.material = front
-        f.back_material = back
-      elsif f.normal.z < -0.5
-        f.material = back
-        f.back_material = front
-      else
-        f.material = front
-        f.back_material = back
-      end
+      face.material = floor_mat
+      face.back_material = floor_mat
     rescue
     end
   end
 
-  ents.grep(Sketchup::Edge).each do |edge|
+  # حواف الأرضية غير مرئية، مع إبقاء Geometry صالحة للتعديل.
+  floor_def.entities.grep(Sketchup::Edge).each do |edge|
     begin
       edge.hidden = true if edge.respond_to?(:hidden=)
       edge.soft = true if edge.respond_to?(:soft=)
@@ -778,66 +644,6 @@ def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, 
   })
   floor_inst
 end
-
-
-def stabilize_floor_appearance(room_group)
-  return false unless room_group && room_group.valid?
-  begin
-    room_group.entities.to_a.each do |inst|
-      next unless inst.valid?
-      next unless inst.get_attribute(DICT, 'النوع').to_s == 'أرضية'
-      definition = inst.is_a?(Sketchup::ComponentInstance) ? inst.definition : inst
-      faces = definition.entities.grep(Sketchup::Face)
-      next if faces.empty?
-      faces.each do |face|
-        next unless face.valid?
-        begin
-          face.reverse! if face.normal.z < -0.5 && faces.none? { |f| f.valid? && f.normal.z > 0.5 }
-        rescue
-        end
-      end
-    end
-  rescue
-  end
-  true
-rescue
-  false
-end
-
-def normalize_room_floor_appearance(room_group)
-  return false unless room_group && room_group.valid?
-  begin
-    room_group.entities.to_a.each do |inst|
-      next unless inst.valid?
-      next unless inst.get_attribute(DICT, 'النوع').to_s == 'أرضية'
-      definition = inst.is_a?(Sketchup::ComponentInstance) ? inst.definition : inst
-      faces = definition.entities.grep(Sketchup::Face)
-      next if faces.empty?
-      # Do not overwrite materials with nil here. Only normalize orientation/edges.
-      top = faces.select { |f| f.valid? && f.normal.z > 0.5 }
-      faces.each do |face|
-        next unless face.valid?
-        begin
-          face.reverse! if face.normal.z < -0.5 && top.any? && face == faces.first
-        rescue
-        end
-      end
-      definition.entities.grep(Sketchup::Edge).each do |edge|
-        begin
-          edge.hidden = true if edge.respond_to?(:hidden=)
-          edge.soft = true if edge.respond_to?(:soft=)
-          edge.smooth = true if edge.respond_to?(:smooth=)
-        rescue
-        end
-      end
-    end
-  rescue
-  end
-  true
-rescue
-  false
-end
-
 
 def apply_smart_room_update(room_group, new_data)
 old_data = build_data_from_group(room_group) || {}
@@ -899,7 +705,7 @@ ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual ||
   end
 
   if wall_t_changed
-    new_outward = compute_outward_pts_per_wall(pts, wall_t_new, wall_overrides_from_room(room_group))
+    new_outward = compute_outward_pts(pts, wall_t_new.cm)
     rebuild_room_walls(room_group, pts, new_outward,
                        wall_h_new.cm, wall_t_new.cm,
                        wall_h_new, wall_t_new, name_new, room_uuid)
@@ -919,7 +725,7 @@ ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual ||
       move_ceiling_by_delta(room_group, delta_h) unless ceiling_needs_rebuild
     end
     if floor_changed
-      current_outward = compute_outward_pts_per_wall(pts, wall_t_old, wall_overrides_from_room(room_group))
+      current_outward = compute_outward_pts(pts, wall_t_old.cm)
       if floor_on_new && floor_t_new > 0
         rebuild_room_floor(room_group, current_outward, floor_t_new.cm,
                            floor_t_new, name_new, room_uuid)
@@ -930,7 +736,7 @@ ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual ||
     if ceiling_needs_rebuild
       delete_room_parts(room_group, 'سقف')
       if ceiling_on_new && ceil_t_new > 0
-        current_outward = compute_outward_pts_per_wall(pts, wall_t_old, wall_overrides_from_room(room_group))
+        current_outward = compute_outward_pts(pts, wall_t_old.cm)
         build_ceiling(model, room_group.entities, name_new, room_uuid,
                       current_outward, pts,
                       wall_h_new.cm, ceil_t_new.cm, ceil_t_new, new_data)
@@ -984,7 +790,7 @@ ceil_t_cm  = new_data['ceil_t'].to_f
 floor_on   = enabled_value?(new_data['create_floor'])
 ceiling_on = enabled_value?(new_data['create_ceiling'])
 room_group.entities.clear!
-outward = compute_outward_pts_per_wall(pts, wall_t_cm, wall_overrides)
+outward = compute_outward_pts(pts, wall_t_cm.cm)
 rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid) if floor_on && floor_t_cm > 0
 if ceiling_on && ceil_t_cm > 0
 build_ceiling(model, room_group.entities, name, room_uuid,
@@ -993,7 +799,7 @@ wall_h_cm.cm, ceil_t_cm.cm, ceil_t_cm, new_data)
 end
 rebuild_room_walls(room_group, pts, outward,
 wall_h_cm.cm, wall_t_cm.cm,
-wall_h_cm, wall_t_cm, name, room_uuid, wall_overrides)
+wall_h_cm, wall_t_cm, name, room_uuid)
 rebuild_all_beams(room_group) if respond_to?(:rebuild_all_beams)
 room_group.name = name
 room_group.layer = tag(model, name)
@@ -1003,7 +809,6 @@ room_group.set_attribute(DICT, 'ارتفاع الحائط سم', wall_h_cm)
 room_group.set_attribute(DICT, 'سمك الحائط سم', wall_t_cm)
 room_group.set_attribute(DICT, 'سمك الأرضية سم', floor_t_cm)
 room_group.set_attribute(DICT, 'سمك السقف سم', ceil_t_cm)
-save_wall_overrides(room_group, wall_overrides)
 model.commit_operation
 model.active_view.invalidate
 UI.messagebox("✅ #{ts('تم إعادة بناء الغرفة بنجاح')}")
@@ -1360,7 +1165,6 @@ def synchronize_room_geometry(room_group, pts, room_data)
   room_uuid = room_group.get_attribute(DICT, 'UUID').to_s
   room_uuid = uuid if room_uuid.empty?
   data = room_data || {}
-  floor_material_snapshot = capture_floor_materials(room_group)
   name = data['room_name'].to_s.strip
   name = ts('الغرفة') if name.empty?
   wall_h_cm = data['wall_h'].to_f
@@ -1369,11 +1173,10 @@ def synchronize_room_geometry(room_group, pts, room_data)
   ceil_t_cm = data['ceil_t'].to_f
   floor_on = enabled_value?(data['create_floor'])
   ceiling_on = enabled_value?(data['create_ceiling'])
-  wall_overrides = wall_overrides_from_room(room_group)
 
   raise 'نقاط الغرفة غير صالحة' unless pts.is_a?(Array) && pts.length >= 3 && polygon_valid_for_wall_edit?(pts)
 
-  outward = compute_outward_pts_per_wall(pts, wall_t_cm, wall_overrides)
+  outward = compute_outward_pts(pts, wall_t_cm.cm)
   raise 'تعذر حساب حدود الحوائط' unless outward && outward.length == pts.length
 
   # ترتيب التنفيذ مهم: نمسح العناصر المشتقة القديمة أولاً، ثم نبني كل شيء من pts الجديدة.
@@ -1384,12 +1187,9 @@ def synchronize_room_geometry(room_group, pts, room_data)
   delete_room_shatras(room_group) if respond_to?(:delete_room_shatras)
 
   rebuild_room_walls(room_group, pts, outward, wall_h_cm.cm, wall_t_cm.cm,
-                     wall_h_cm, wall_t_cm, name, room_uuid, wall_overrides)
+                     wall_h_cm, wall_t_cm, name, room_uuid)
 
   rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid) if floor_on && floor_t_cm > 0
-  normalize_room_floor_appearance(room_group) if respond_to?(:normalize_room_floor_appearance)
-  restore_floor_materials(room_group, floor_material_snapshot) if floor_on && floor_t_cm > 0
-  stabilize_floor_appearance(room_group) if respond_to?(:stabilize_floor_appearance)
 
   if ceiling_on && ceil_t_cm > 0
     build_ceiling(model, room_group.entities, name, room_uuid, outward, pts,
@@ -1405,7 +1205,6 @@ def synchronize_room_geometry(room_group, pts, room_data)
   room_group.set_attribute(DICT, 'سمك السقف سم', ceil_t_cm)
   room_group.set_attribute(DICT, 'إنشاء أرضية', floor_on ? 'نعم' : 'لا')
   room_group.set_attribute(DICT, 'إنشاء سقف', ceiling_on ? 'نعم' : 'لا')
-  save_wall_overrides(room_group, wall_overrides)
 
   rebuild_all_beams(room_group) if respond_to?(:rebuild_all_beams)
   rebuild_all_shatras(room_group) if respond_to?(:rebuild_all_shatras)
@@ -1452,41 +1251,33 @@ def apply_wall_edit(room_group, wall_number, data)
   end
 
   room_data = room_data.dup
+  room_data['wall_h'] = new_height
+  room_data['wall_t'] = new_thickness
 
   old_pts = room_pts_from_group(room_group)
-  overrides = wall_overrides_from_room(room_group)
   new_pts = build_smart_wall_edit_points(room_group, wall_number, new_length, anchor, edit_mode)
   unless new_pts && polygon_valid_for_wall_edit?(new_pts)
     UI.messagebox(ts('القيمة الجديدة أدت إلى شكل غرفة غير صالح. جرّب طولاً أكبر أو نقطة تثبيت مختلفة.'))
     return false
   end
 
-  if enabled_value?(data['inherit_room_defaults'])
-    overrides.delete(wall_number.to_i.to_s)
-  else
-    overrides[wall_number.to_i.to_s] = {
-      'height_cm' => new_height,
-      'thickness_cm' => new_thickness,
-      'name' => new_name
-    }
-  end
-
   model = Sketchup.active_model
   model.start_operation('MHD Parametric Wall Edit', true)
   begin
     old_wall_name = rec['name']
-    save_wall_overrides(room_group, overrides)
     remove_legacy_source_floor_geometry(old_pts)
     rebuild_room_after_wall_edit(room_group, new_pts, room_data)
 
-    wall = find_wall_in_room(room_group, wall_number)
-    if wall && wall.valid?
-      wall.name = new_name
-      wall.set_attribute(DICT, 'الاسم', new_name)
-      room_name = room_data['room_name'].to_s
-      wall.layer = tag(model, "#{room_name} | #{new_name}")
+    if new_name != old_wall_name
+      wall = find_wall_in_room(room_group, wall_number)
+      if wall && wall.valid?
+        wall.name = new_name
+        wall.set_attribute(DICT, 'الاسم', new_name)
+        room_name = room_data['room_name'].to_s
+        wall.layer = tag(model, "#{room_name} | #{new_name}")
+      end
+      rename_beam_tags_for_room(room_group) if respond_to?(:rename_beam_tags_for_room)
     end
-    rename_beam_tags_for_room(room_group) if respond_to?(:rename_beam_tags_for_room)
 
     model.commit_operation
     UI.messagebox("✅ #{ts('تم تعديل الحائط ديناميكياً')}\\n#{ts('الطول')}: #{new_length.round(2)} سم")
@@ -1522,18 +1313,13 @@ def open_wall_dialog(target)
   end
 
   v = wall_edit_dialog_values(rec)
-  defaults = build_data_from_group(room_group) || {}
-  room_data_default_height = defaults['wall_h'].to_f > 0.1 ? defaults['wall_h'].to_f : v['height_cm']
-  room_data_default_thickness = defaults['wall_t'].to_f > 0.1 ? defaults['wall_t'].to_f : v['thickness_cm']
-  current_overrides = wall_overrides_from_room(room_group)
-  has_override = current_overrides.key?(wall_number.to_i.to_s)
   dlg = UI::HtmlDialog.new(
     dialog_title: "#{ts('تعديل الحائط')} - MHDESIGN",
     preferences_key: PREF_KEY + '_WALL_EDIT',
-    scrollable: true,
+    scrollable: false,
     resizable: true,
-    width: 500,
-    height: 860,
+    width: 390,
+    height: 610,
     style: UI::HtmlDialog::STYLE_DIALOG
   )
 
@@ -1545,10 +1331,10 @@ def open_wall_dialog(target)
 <meta charset="UTF-8">
 <style>
 *{box-sizing:border-box}body{margin:0;background:#07131d;color:#eaf4f8;font-family:Arial,Tahoma,sans-serif;overflow:auto}
-.app{padding:14px 14px 28px;min-height:100vh}.title{font-size:21px;font-weight:900;text-align:center;margin-bottom:5px}.sub{text-align:center;color:#8eabbc;font-size:12px;margin-bottom:14px}
+.app{padding:14px}.title{font-size:21px;font-weight:900;text-align:center;margin-bottom:5px}.sub{text-align:center;color:#8eabbc;font-size:12px;margin-bottom:14px}
 .card{background:#0b1b27;border:1px solid #1c3342;border-radius:12px;padding:12px;margin-bottom:10px}.row{display:grid;grid-template-columns:135px 1fr;gap:8px;align-items:center;margin-bottom:9px}.row:last-child{margin-bottom:0}
 label{font-weight:900;font-size:13px}input,select{width:100%;height:34px;background:#111f2a;color:#fff;border:1px solid #294457;border-radius:7px;padding:4px 8px;text-align:center;font-size:14px}input:focus,select:focus{outline:2px solid #39a245}
-.length-wrap{display:grid;grid-template-columns:42px 1fr 42px;gap:5px;align-items:center}.step{height:34px;border:1px solid #294457;background:#0f2433;color:#fff;border-radius:7px;font-size:17px;font-weight:900;cursor:pointer}.range{width:100%;height:26px}.big{font-size:18px;font-weight:900;text-align:center;margin:4px 0 12px;color:#fff}.hint{font-size:11px;color:#8eabbc;line-height:1.55;margin-top:7px}.footer{display:flex;gap:8px;margin-top:16px;position:sticky;bottom:0;padding-top:10px;background:linear-gradient(transparent,#07131d 18px);z-index:5}.btn{flex:1;height:42px;border:0;border-radius:9px;font-weight:900;font-size:14px;cursor:pointer}.save{background:#4de37a;color:#061923}.cancel{background:#0b1b27;color:#fff;border:1px solid #294457}
+.length-wrap{display:grid;grid-template-columns:42px 1fr 42px;gap:5px;align-items:center}.step{height:34px;border:1px solid #294457;background:#0f2433;color:#fff;border-radius:7px;font-size:17px;font-weight:900;cursor:pointer}.range{width:100%;height:26px}.big{font-size:18px;font-weight:900;text-align:center;margin:4px 0 12px;color:#fff}.hint{font-size:11px;color:#8eabbc;line-height:1.55;margin-top:7px}.footer{display:flex;gap:8px;margin-top:12px}.btn{flex:1;height:42px;border:0;border-radius:9px;font-weight:900;font-size:14px;cursor:pointer}.save{background:#4de37a;color:#061923}.cancel{background:#0b1b27;color:#fff;border:1px solid #294457}
 </style>
 </head>
 <body>
@@ -1566,10 +1352,9 @@ label{font-weight:900;font-size:13px}input,select{width:100%;height:34px;backgro
 <div class="row"><label>نمط التعديل</label><select id="edit_mode"><option value="single">🎯 حائط واحد فقط — لا تحرك المقابل</option><option value="auto">🧠 ذكي — حافظ على استقامة الغرفة</option><option value="opposite">↔️ الحائط + المقابل معًا</option></select></div>
 <div class="row"><label>ارتفاع الحائط سم</label><input id="height" type="number" step="0.1" min="1" value="#{v['height_cm']}"></div>
 <div class="row"><label>سمك الحائط سم</label><input id="thickness" type="number" step="0.1" min="0.1" value="#{v['thickness_cm']}"></div>
-<div class="row"><label>ربط الحائط</label><select id="inherit"><option value="no"#{has_override ? ' selected' : ''}>🔧 مستقل — احفظ مقاسات هذا الحائط</option><option value="yes"#{has_override ? '' : ' selected'}>🔗 مرتبط بالغرفة — يرث الإعدادات العامة</option></select></div>
 <div class="row"><label>اسم الحائط</label><input id="name" type="text" value="#{safe_name}"></div>
 </div>
-<div class="card"><b>⚡ تحكم بارامتري كامل</b><div class="hint">هذا الحائط يحتفظ بطوله وارتفاعه وسمكه واسمه كبيانات مستقلة. عند تغييره يعاد بناء الحائط، الأرضية، السقف، الكمرات والشطرات من نفس Room Geometry.</div><div class="row"><label>إعادة لقيم الغرفة</label><button class="btn cancel" type="button" onclick="resetDefaults()">↺ إعادة الضبط</button></div></div>
+<div class="card"><b>⚡ تحديث ديناميكي</b><div class="hint">بعد الحفظ يتم إعادة حساب شكل الغرفة، الأرضية، السقف، والحوائط. الكمرات المرتبطة بالحائط يعاد بناؤها تلقائياً على الشكل الجديد.</div></div>
 <div class="footer"><button class="btn save" onclick="submitData()">💾 تطبيق التعديل</button><button class="btn cancel" onclick="sketchup.cancel()">إغلاق</button></div>
 </div>
 <script>
@@ -1577,9 +1362,8 @@ function updateBig(){document.getElementById('length_big').textContent=document.
 function syncRange(){let n=parseFloat(document.getElementById('length').value||1);n=Math.max(1,Math.min(2000,n));document.getElementById('length_range').value=n;updateBig();}
 function syncInput(){document.getElementById('length').value=document.getElementById('length_range').value;updateBig();}
 function step(v){let n=parseFloat(document.getElementById('length').value||1);n=Math.max(1,n+v);document.getElementById('length').value=n;syncRange();}
-function resetDefaults(){document.getElementById('height').value=#{room_data_default_height};document.getElementById('thickness').value=#{room_data_default_thickness};document.getElementById('name').value='';document.getElementById('inherit').value='yes';syncRange();}
 function submitData(){
- let data={length_cm:parseFloat(document.getElementById('length').value),height_cm:parseFloat(document.getElementById('height').value),thickness_cm:parseFloat(document.getElementById('thickness').value),name:document.getElementById('name').value,inherit_room_defaults:document.getElementById('inherit').value,anchor:document.getElementById('anchor').value,edit_mode:document.getElementById('edit_mode').value};
+ let data={length_cm:parseFloat(document.getElementById('length').value),height_cm:parseFloat(document.getElementById('height').value),thickness_cm:parseFloat(document.getElementById('thickness').value),name:document.getElementById('name').value,anchor:document.getElementById('anchor').value,edit_mode:document.getElementById('edit_mode').value};
  if(!Number.isFinite(data.length_cm)||!Number.isFinite(data.height_cm)||!Number.isFinite(data.thickness_cm)){alert('راجع المقاسات');return;}
  sketchup.submit(JSON.stringify(data));
 }
@@ -1588,12 +1372,7 @@ updateBig();
 </body></html>
   HTML
   dlg.set_html(html)
-  # Wall-edit dialog is independent from the shatra preview engine.
-  # The previous build accidentally inherited the shatra callbacks here,
-  # which caused undefined-variable/runtime failures when editing walls.
-  dlg.add_action_callback('cancel') do
-    dlg.close
-  end
+  dlg.add_action_callback('cancel') { dlg.close }
   dlg.add_action_callback('submit') do |_, json|
     begin
       data = JSON.parse(json)
@@ -1631,123 +1410,9 @@ end
 
 
 
-
 # =========================================================
 # MHD SHATRA ENGINE V1 - Smart wall-corner calibration
 # =========================================================
-
-def shatra_base_pts(room_group)
-  json = room_group.get_attribute(DICT, 'shatra_base_room_pts_json').to_s
-  return nil if json.empty?
-  data = JSON.parse(json) rescue nil
-  return nil unless data.is_a?(Array) && data.length >= 3
-  data.map { |a| Geom::Point3d.new(a[0].to_f, a[1].to_f, a[2].to_f) }
-rescue
-  nil
-end
-
-def save_shatra_base_pts(room_group, pts)
-  room_group.set_attribute(DICT, 'shatra_base_room_pts_json', pts.map { |p| [p.x.to_f, p.y.to_f, p.z.to_f] }.to_json)
-end
-
-def clear_shatra_base_pts(room_group)
-  room_group.delete_attribute(DICT, 'shatra_base_room_pts_json') rescue nil
-end
-
-def apply_shatras_to_points(base_pts, shatras)
-  result = base_pts.map(&:clone)
-  Array(shatras).sort_by { |s| s['corner_index'].to_i }.each do |s|
-    angle = s['angle_deg'].to_f
-    adjusted = shatra_adjust_corner_points(result, s['corner_index'].to_i, angle)
-    return nil unless adjusted && polygon_valid_for_wall_edit?(adjusted)
-    result = adjusted
-  end
-  result
-end
-
-def restore_natural_room_from_shatras(room_group, remaining_shatras)
-  base = shatra_base_pts(room_group)
-  return false unless base && base.length >= 3
-  data = build_data_from_group(room_group) || {}
-  target_pts = apply_shatras_to_points(base, remaining_shatras)
-  return false unless target_pts
-  synchronize_room_geometry(room_group, target_pts, data)
-  if remaining_shatras.empty?
-    clear_shatra_base_pts(room_group)
-  end
-  true
-end
-
-def shatra_preview_state_for(room_group)
-  @shatra_preview_states ||= {}
-  @shatra_preview_states[room_group.object_id]
-end
-
-def begin_shatra_preview(room_group)
-  @shatra_preview_states ||= {}
-  key = room_group.object_id
-  return if @shatra_preview_states[key]
-  @shatra_preview_states[key] = {
-    'pts' => (room_pts_from_group(room_group) || []).map(&:clone),
-    'data' => (build_data_from_group(room_group) || {}).dup,
-    'shatras' => shatras_from_room(room_group).map { |x| x.dup }
-  }
-end
-
-def restore_shatra_preview(room_group)
-  @shatra_preview_states ||= {}
-  state = @shatra_preview_states.delete(room_group.object_id)
-  return false unless state
-  synchronize_room_geometry(room_group, state['pts'], state['data'])
-  save_shatras(room_group, state['shatras'])
-  rebuild_all_shatras(room_group)
-  true
-rescue
-  false
-end
-
-def apply_shatra_preview(room_group, corner_idx, data, target_uuid = '')
-  begin_shatra_preview(room_group)
-  base_state = shatra_preview_state_for(room_group)
-  base_pts = shatra_base_pts(room_group) || base_state['pts'].map(&:clone)
-  existing = shatras_from_room(room_group)
-
-  angle = shatra_angle_from_sides(data['a_cm'], data['b_cm'], data['diagonal_cm'])
-  raise 'مقاسات الشطرة غير هندسية.' unless angle
-
-  candidate = {
-    'uuid' => (target_uuid.to_s.empty? ? 'preview' : target_uuid.to_s),
-    'corner_index' => corner_idx.to_i,
-    'a_cm' => data['a_cm'].to_f,
-    'b_cm' => data['b_cm'].to_f,
-    'diagonal_cm' => data['diagonal_cm'].to_f,
-    'angle_deg' => angle.to_f
-  }
-
-  kept = if target_uuid.to_s.empty?
-    existing.reject { |s| s['corner_index'].to_i == corner_idx.to_i }
-  else
-    existing.reject { |s| s['uuid'].to_s == target_uuid.to_s }
-  end
-  preview_set = kept + [candidate]
-  new_pts = apply_shatras_to_points(base_pts, preview_set)
-  raise 'تعذر حساب معاينة الشطرة.' unless new_pts && polygon_valid_for_wall_edit?(new_pts)
-
-  synchronize_room_geometry(room_group, new_pts, base_state['data'])
-
-  # رسم الشطرة المعاينة بصرياً فوراً بدون حفظها كبيانات نهائية.
-  delete_room_shatras(room_group)
-  kept.each { |s| build_shatra_guide(room_group, s) }
-  build_shatra_guide(room_group, candidate)
-
-  normalize_room_floor_appearance(room_group) if respond_to?(:normalize_room_floor_appearance)
-  stabilize_floor_appearance(room_group) if respond_to?(:stabilize_floor_appearance)
-  Sketchup.active_model.active_view.invalidate
-  true
-rescue => e
-  raise e
-end
-
 def shatras_from_room(room_group)
   json = room_group.get_attribute(DICT, 'shatras_json').to_s
   return [] if json.empty?
@@ -1922,30 +1587,39 @@ def apply_shatra_calibration(room_group, corner_idx, data)
   b = data['b_cm'].to_f
   diag = data['diagonal_cm'].to_f
   angle = shatra_angle_from_sides(a, b, diag)
+
   unless angle
     UI.messagebox("❌ مقاسات الشطرة غير هندسية.\nلازم القطر يكون أكبر من |#{a} - #{b}| وأصغر من #{a + b}.")
     return false
   end
+
   pts = room_pts_from_group(room_group)
   unless pts && pts.length >= 3
     UI.messagebox('❌ لا يمكن قراءة نقاط الغرفة.')
     return false
   end
 
+  new_pts = shatra_adjust_corner_points(pts, corner_idx, angle)
+  unless new_pts && polygon_valid_for_wall_edit?(new_pts)
+    UI.messagebox('❌ التعديل سيؤدي إلى شكل غرفة غير صالح.')
+    return false
+  end
+
   model = Sketchup.active_model
   room_data = build_data_from_group(room_group) || {}
+  room_data = room_data.dup
+  old_pts = pts.map(&:clone)
   model.start_operation('MHD Smart Shatra Calibration', true)
   begin
-    existing = shatras_from_room(room_group)
-    base = shatra_base_pts(room_group)
-    save_shatra_base_pts(room_group, pts) if existing.empty? || !base
-    base = shatra_base_pts(room_group) || pts.map(&:clone)
+    remove_legacy_source_floor_geometry(old_pts)
+    # نبني كل Geometry مرة واحدة من النقاط الجديدة ثم نعيد رسم مرجع الشطرة.
+    rebuild_room_after_wall_edit(room_group, new_pts, room_data)
 
+    shatras = shatras_from_room(room_group)
     target_uuid = data['uuid'].to_s
-    remaining = existing.reject do |s|
-      s['corner_index'].to_i == corner_idx.to_i || (!target_uuid.empty? && s['uuid'].to_s == target_uuid)
-    end
-    new_shatra = {
+    previous = shatras.find { |s| !target_uuid.empty? && s['uuid'].to_s == target_uuid }
+    shatras.reject! { |s| s['corner_index'].to_i == corner_idx.to_i || (!target_uuid.empty? && s['uuid'].to_s == target_uuid) }
+    shatras << {
       'uuid' => (target_uuid.empty? ? uuid : target_uuid),
       'corner_index' => corner_idx.to_i,
       'a_cm' => a,
@@ -1953,14 +1627,8 @@ def apply_shatra_calibration(room_group, corner_idx, data)
       'diagonal_cm' => diag,
       'angle_deg' => angle
     }
-    remaining << new_shatra
-    new_pts = apply_shatras_to_points(base, remaining)
-    raise 'التعديل سيؤدي إلى شكل غرفة غير صالح.' unless new_pts && polygon_valid_for_wall_edit?(new_pts)
-
-    synchronize_room_geometry(room_group, new_pts, room_data)
-    save_shatras(room_group, remaining)
+    save_shatras(room_group, shatras)
     rebuild_all_shatras(room_group)
-    @shatra_preview_states.delete(room_group.object_id) if defined?(@shatra_preview_states) && @shatra_preview_states
 
     model.commit_operation
     model.active_view.invalidate
@@ -1986,23 +1654,11 @@ def delete_shatra(room_group, shatra_uuid)
   model = Sketchup.active_model
   model.start_operation('MHD Delete Shatra', true)
   begin
-    base = shatra_base_pts(room_group)
-    if base
-      target_pts = apply_shatras_to_points(base, remaining)
-      raise 'تعذر استعادة هندسة الغرفة.' unless target_pts
-      data = build_data_from_group(room_group) || {}
-      synchronize_room_geometry(room_group, target_pts, data)
-      save_shatras(room_group, remaining)
-      rebuild_all_shatras(room_group)
-      clear_shatra_base_pts(room_group) if remaining.empty?
-    else
-      save_shatras(room_group, remaining)
-      rebuild_all_shatras(room_group)
-    end
-    @shatra_preview_states.delete(room_group.object_id) if defined?(@shatra_preview_states) && @shatra_preview_states
+    save_shatras(room_group, remaining)
+    rebuild_all_shatras(room_group)
     model.commit_operation
     model.active_view.invalidate
-    UI.messagebox('✅ تم حذف الشطرة وإرجاع الحائط للوضع السابق بنجاح')
+    UI.messagebox('✅ تم حذف الشطرة بنجاح')
     true
   rescue => e
     model.abort_operation rescue nil
@@ -2081,11 +1737,11 @@ button{height:44px;border:0;border-radius:9px;font-weight:900;font-size:13px;cur
 
   <div class="footer">
     <button class="save" onclick="applyIt()">📐 تطبيق الشطرة</button>
-    <button class="secondary" onclick="previewIt()">👁️ معاينة على الحائط</button>
+    <button class="close" onclick="sketchup.cancel()">إغلاق</button>
   </div>
   <div class="footer3">
     <button class="secondary" onclick="refreshInfo()">🔄 تحديث المعلومات</button>
-    #{existing ? '<button class="danger" onclick="deleteIt()">🗑 حذف وإرجاع الحائط</button><button class="close" onclick="sketchup.cancel()">إغلاق بدون حفظ</button>' : '<button class="close" onclick="sketchup.cancel()">✖ إلغاء المعاينة</button><button class="secondary" onclick="sketchup.cancel()">إغلاق</button>'}
+    #{existing ? '<button class="danger" onclick="deleteIt()">🗑 حذف الشطرة</button><button class="secondary" onclick="sketchup.cancel()">✏️ إغلاق وحفظ لاحقاً</button>' : '<button class="secondary" onclick="sketchup.cancel()">✖ إلغاء</button><button class="secondary" onclick="sketchup.cancel()">ℹ️ معاينة فقط</button>'}
   </div>
 </div>
 <script>
@@ -2108,7 +1764,6 @@ function calc(){
 }
 ['a','b','c'].forEach(id=>document.getElementById(id).addEventListener('input',calc));
 function applyIt(){const d=calc();if(!d){alert('راجع المقاسات والقطر');return}sketchup.submit(JSON.stringify(d));}
-function previewIt(){const d=calc();if(!d){alert('راجع المقاسات والقطر');return}sketchup.preview(JSON.stringify(d));}
 function refreshInfo(){calc();}
 function deleteIt(){sketchup.delete_shatra('#{uuid0}');}
 calc();
@@ -2117,18 +1772,7 @@ calc();
   HTML
 
   dlg.set_html(html)
-  dlg.add_action_callback('cancel') do
-    restore_shatra_preview(room_group)
-    dlg.close
-  end
-  dlg.add_action_callback('preview') do |_, json|
-    begin
-      data = JSON.parse(json)
-      apply_shatra_preview(room_group, corner_idx, data, uuid0)
-    rescue => e
-      UI.messagebox("❌ خطأ في معاينة الشطرة:\n#{e.class}: #{e.message}")
-    end
-  end
+  dlg.add_action_callback('cancel') { dlg.close }
   dlg.add_action_callback('submit') do |_, json|
     begin
       data = JSON.parse(json)
@@ -2301,7 +1945,6 @@ def build_single_beam(model, room_group, wall, spec)
   height_cm = spec['height_cm'].to_f
   depth_cm = spec['depth_cm'].to_f
   elevation_cm = spec['elevation_cm'].to_f
-  lock_to_ceiling = spec.key?('lock_to_ceiling') ? !!spec['lock_to_ceiling'] : true
 
   raise 'ارتفاع الكمر لازم يكون أكبر من صفر' if height_cm <= 0
   raise 'عمق الكمر لازم يكون أكبر من صفر' if depth_cm <= 0
@@ -2309,14 +1952,12 @@ def build_single_beam(model, room_group, wall, spec)
   if height_cm > info['wall_h_cm']
     height_cm = info['wall_h_cm']
     elevation_cm = 0.0
-  elsif lock_to_ceiling
-    elevation_cm = [info['wall_h_cm'] - height_cm, 0.0].max
+    spec['height_cm'] = height_cm
+    spec['elevation_cm'] = elevation_cm
   elsif elevation_cm + height_cm > info['wall_h_cm']
     elevation_cm = [info['wall_h_cm'] - height_cm, 0.0].max
+    spec['elevation_cm'] = elevation_cm
   end
-  spec['height_cm'] = height_cm
-  spec['elevation_cm'] = elevation_cm
-  spec['lock_to_ceiling'] = lock_to_ceiling
 
   p1 = info['p1']
   p2 = info['p2']
@@ -2384,7 +2025,6 @@ def rebuild_all_beams(room_group)
     next unless wall && wall.valid?
     wall_beams.each do |spec|
       begin
-        spec['lock_to_ceiling'] = true unless spec.key?('lock_to_ceiling')
         build_single_beam(model, room_group, wall, spec)
       rescue => e
         UI.messagebox("⚠️ لم يتم إنشاء #{spec['number']} للحائط #{wall_number}:\n#{e.message}")
@@ -2453,8 +2093,7 @@ def open_beam_dialog(target, edit_uuid = nil)
     'number' => number,
     'height_cm' => current ? current['height_cm'].to_f : 20.0,
     'depth_cm' => current ? current['depth_cm'].to_f : [info['wall_t_cm'], 20.0].max,
-    'elevation_cm' => current ? current['elevation_cm'].to_f : [info['wall_h_cm'] - 20.0, 0.0].max,
-    'lock_to_ceiling' => current && current.key?('lock_to_ceiling') ? !!current['lock_to_ceiling'] : true
+    'elevation_cm' => current ? current['elevation_cm'].to_f : [info['wall_h_cm'] - 20.0, 0.0].max
   }
 
   dlg = UI::HtmlDialog.new(
@@ -2503,8 +2142,7 @@ button{height:42px;border:0;border-radius:9px;font-size:14px;font-weight:900;cur
     <div class="row"><label>ارتفاع الكمر سم</label><input id="height" type="number" min="0.1" step="0.1" value="#{defaults['height_cm']}"></div>
     <div class="row"><label>عمق الكمر سم</label><input id="depth" type="number" min="0.1" step="0.1" value="#{defaults['depth_cm']}"></div>
     <div class="row"><label>ارتفاع من الأرض سم</label><input id="elevation" type="number" min="0" step="0.1" value="#{defaults['elevation_cm']}"></div>
-    <div class="row"><label>تثبيت أعلى الكمر مع السقف</label><select id="lock_to_ceiling"><option value="yes"#{defaults['lock_to_ceiling'] ? ' selected' : ''}>نعم — يتحرك تلقائياً مع ارتفاع الحائط</option><option value="no"#{defaults['lock_to_ceiling'] ? '' : ' selected'}>لا — استخدم الارتفاع اليدوي</option></select></div>
-    <div class="hint">عند تفعيل الربط يظل أعلى الكمر على منسوب أعلى الحائط/السقف تلقائياً بعد أي تغيير في ارتفاع الحائط.</div>
+    <div class="hint">الكمر يمتد تلقائياً بطول الحائط بالكامل، ويُعاد بناؤه تلقائياً عند تعديل ارتفاع أو سمك الحائط.</div>
   </div>
   <div class="footer">
     <button class="save" onclick="submitData()">#{is_beam ? 'حفظ التعديل' : 'إضافة الكمر'}</button>
@@ -2516,11 +2154,9 @@ button{height:42px;border:0;border-radius:9px;font-size:14px;font-weight:900;cur
 function val(id){return document.getElementById(id).value}
 function submitData(){
   const h=parseFloat(val('height')), d=parseFloat(val('depth')), z=parseFloat(val('elevation'));
-  const lock=(document.getElementById('lock_to_ceiling').value==='yes');
   if(!(h>0) || !(d>0) || !(z>=0)){alert('راجع المقاسات');return}
-  if(lock && h>#{info['wall_h_cm'].to_f}+0.001){alert('ارتفاع الكمر أكبر من ارتفاع الحائط');return}
-  if(!lock && z+h>#{info['wall_h_cm'].to_f}+0.001){alert('ارتفاع الكمر + ارتفاعه من الأرض أكبر من ارتفاع الحائط');return}
-  sketchup.submit(JSON.stringify({height_cm:h,depth_cm:d,elevation_cm:z,lock_to_ceiling:lock}));
+  if(z+h>#{info['wall_h_cm'].to_f}+0.001){alert('ارتفاع الكمر + ارتفاعه من الأرض أكبر من ارتفاع الحائط');return}
+  sketchup.submit(JSON.stringify({height_cm:h,depth_cm:d,elevation_cm:z}));
 }
 function removeBeam(){sketchup.removeBeam()}
 </script>
@@ -2552,7 +2188,6 @@ HTML
           beams[idx]['height_cm'] = h
           beams[idx]['depth_cm'] = d
           beams[idx]['elevation_cm'] = z
-          beams[idx]['lock_to_ceiling'] = data['lock_to_ceiling'] == true
           beams[idx]['wall_number'] = info['number']
           beams[idx]['wall_name'] = info['name']
           beams[idx]['room_name'] = info['room_name']
@@ -2567,8 +2202,7 @@ HTML
             'number' => number,
             'height_cm' => h,
             'depth_cm' => d,
-            'elevation_cm' => z,
-            'lock_to_ceiling' => (data['lock_to_ceiling'] == true)
+            'elevation_cm' => z
           }
         end
         save_beams(room_group, beams)
@@ -2912,16 +2546,10 @@ ts(html)
 end
 
 def dialog_input
-  model = Sketchup.active_model
-  face = selected_face
-  edges = model.selection.grep(Sketchup::Edge).select(&:valid?)
-
-  # The builder works from either a Face (Rectangle/polygon) OR raw SketchUp Edges.
-  # Never require a Face for line-based wall construction.
-  unless face || !edges.empty?
-    UI.messagebox(ts('حدد Line/Edges أو Rectangle/Face ثم شغّل بناء الحوائط.'))
-    return nil
-  end
+unless selected_face
+UI.messagebox(ts('حدد Face الأرضية الأول'))
+return
+end
 dlg = UI::HtmlDialog.new(
 dialog_title: ts('بناء الحوائط'),
 preferences_key: PREF_KEY,
@@ -3282,355 +2910,147 @@ glow_direction)
 end
 end
 
-def selected_line_chain_points
-  model = Sketchup.active_model
-  edges = model.selection.grep(Sketchup::Edge).select(&:valid?)
-  return nil if edges.empty?
-
-  # Build an undirected graph from the selected Edges.
-  adjacency = Hash.new { |h, k| h[k] = [] }
-  edges.each do |e|
-    a = e.start.position
-    b = e.end.position
-    ak = a.to_a.map(&:to_f)
-    bk = b.to_a.map(&:to_f)
-    adjacency[ak] << bk unless adjacency[ak].any? { |v| v == bk }
-    adjacency[bk] << ak unless adjacency[bk].any? { |v| v == ak }
-  end
-
-  # Reject disconnected selections instead of silently building partial walls.
-  all_keys = adjacency.keys
-  return nil if all_keys.empty?
-  seen = {}
-  stack = [all_keys.first]
-  until stack.empty?
-    k = stack.pop
-    next if seen[k]
-    seen[k] = true
-    adjacency[k].each { |n| stack << n unless seen[n] }
-  end
-  return nil unless seen.length == all_keys.length
-
-  # Start from an endpoint when available; otherwise use the first vertex of a loop.
-  start_key = adjacency.keys.find { |k| adjacency[k].length == 1 } || adjacency.keys.first
-  ordered = []
-  visited_edges = {}
-  current_key = start_key
-  safety = 0
-
-  loop do
-    ordered << Geom::Point3d.new(*current_key)
-    neighbors = adjacency[current_key]
-    candidates = neighbors.reject do |nk|
-      edge_key = [current_key, nk].sort_by { |v| v.join(',') }
-      visited_edges.key?(edge_key)
-    end
-
-    break if candidates.empty?
-
-    # Prefer the continuation that is most geometrically consistent with the previous edge.
-    next_key = candidates.first
-    if ordered.length >= 2
-      prev = ordered[-2]
-      cur = ordered[-1]
-      base = prev.vector_to(cur)
-      candidates.sort_by! do |nk|
-        nxt = cur.vector_to(Geom::Point3d.new(*nk))
-        if base.length > 0 && nxt.length > 0
-          base.normalize!
-          nxt.normalize!
-          1.0 - [[base.dot(nxt), -1.0].max, 1.0].min.abs
-        else
-          1.0
-        end
-      end
-      next_key = candidates.first
-    end
-
-    edge_key = [current_key, next_key].sort_by { |v| v.join(',') }
-    visited_edges[edge_key] = true
-    current_key = next_key
-    safety += 1
-    break if current_key == start_key
-    break if safety > edges.length + 2
-  end
-
-  ordered = ordered.each_with_object([]) do |pt, arr|
-    arr << pt unless arr.any? { |q| q.distance(pt) < 0.001 }
-  end
-  ordered.length >= 2 ? ordered : nil
-rescue
-  nil
-end
-
-def build_wall_geometry_data(pts, wall_t, closed)
-  wall_quads = []
-
-  if closed
-    count = pts.length
-    outward_pts = []
-    count.times do |i|
-      p_prev = pts[(i - 1) % count]
-      p_curr = pts[i]
-      p_next = pts[(i + 1) % count]
-      d_prev = p_prev.vector_to(p_curr)
-      d_curr = p_curr.vector_to(p_next)
-      next if d_prev.length == 0 || d_curr.length == 0
-      d_prev.normalize!
-      d_curr.normalize!
-      out_prev = d_prev.cross(Z_AXIS)
-      out_curr = d_curr.cross(Z_AXIS)
-      out_prev.normalize!
-      out_curr.normalize!
-      out_prev.length = wall_t
-      out_curr.length = wall_t
-      a1 = p_prev.offset(out_prev)
-      b1 = p_curr.offset(out_curr)
-      inter = line_intersection_2d(a1, d_prev, b1, d_curr)
-      inter ||= p_curr.offset(out_curr)
-      outward_pts << inter
-    end
-    count.times do |i|
-      j = (i + 1) % count
-      wall_quads << [pts[i], pts[j], outward_pts[j], outward_pts[i]]
-    end
-    [outward_pts, wall_quads]
-  else
-    # Open path: each segment gets its own centered wall rectangle.
-    (0...(pts.length - 1)).each do |i|
-      p1 = pts[i]
-      p2 = pts[i + 1]
-      d = p1.vector_to(p2)
-      next if d.length == 0
-      d.normalize!
-      n = d.cross(Z_AXIS)
-      next if n.length == 0
-      n.normalize!
-      offset = n.clone
-      offset.length = wall_t
-      wall_quads << [p1, p2, p2.offset(offset), p1.offset(offset)]
-    end
-    [nil, wall_quads]
-  end
-end
-
-def prepare_source_edges_after_build(source_edges, model, room_name, room_uuid)
-  return if source_edges.nil? || source_edges.empty?
-  ref_tag_name = "#{room_name} | مرجع الحوائط"
-  ref_tag = tag(model, ref_tag_name)
-  source_edges.each_with_index do |edge, idx|
-    next unless edge && edge.valid?
-    begin
-      edge.layer = ref_tag
-      edge.hidden = true if edge.respond_to?(:hidden=)
-      edge.set_attribute(DICT, 'النوع', 'مرجع حائط')
-      edge.set_attribute(DICT, 'Room_UUID', room_uuid)
-      edge.set_attribute(DICT, 'اسم الغرفة', room_name)
-      edge.set_attribute(DICT, 'رقم المصدر', idx + 1)
-    rescue
-      # A source edge can belong to locked/foreign geometry; never let that
-      # prevent the real wall construction from completing.
-    end
-  end
-end
-
 def build_from_data(data)
-  model = Sketchup.active_model
-  face = selected_face
-  source_edges = model.selection.grep(Sketchup::Edge).select(&:valid?)
-  closed = false
+model = Sketchup.active_model
+face = selected_face
+unless face
+UI.messagebox(ts('حدد Face الأرضية الأول'))
+return
+end
+room_name = data['room_name'].to_s.strip
+room_name = ts('الغرفة') if room_name.empty?
+wall_h_cm  = data['wall_h'].to_f
+wall_t_cm  = data['wall_t'].to_f
+floor_t_cm = data['floor_t'].to_f
+ceil_t_cm  = data['ceil_t'].to_f
+create_floor = enabled_value?(data['create_floor'])
+create_ceiling = enabled_value?(data['create_ceiling'])
+ceiling_pattern = data['ceiling_pattern'].to_s
+if wall_h_cm <= 0 || wall_t_cm <= 0
+UI.messagebox(ts('ارتفاع وسمك الحائط لازم يكونوا أكبر من صفر'))
+return
+end
+wall_h  = wall_h_cm.cm
+wall_t  = wall_t_cm.cm
+floor_t = floor_t_cm.cm
+ceil_t  = ceil_t_cm.cm
+model.start_operation('MHD Room Builder', true)
+pts = face.outer_loop.vertices.map { |v| v.position }
+pts.reverse! if signed_area_xy(pts) < 0
+count = pts.length
+outward_pts = []
+count.times do |i|
+p_prev = pts[(i - 1) % count]
+p_curr = pts[i]
+p_next = pts[(i + 1) % count]
+d_prev = p_prev.vector_to(p_curr)
+d_curr = p_curr.vector_to(p_next)
+d_prev.normalize!
+d_curr.normalize!
+out_prev = d_prev.cross(Z_AXIS)
+out_curr = d_curr.cross(Z_AXIS)
+out_prev.normalize!
+out_curr.normalize!
+out_prev.length = wall_t
+out_curr.length = wall_t
+a1 = p_prev.offset(out_prev)
+b1 = p_curr.offset(out_curr)
+inter = line_intersection_2d(a1, d_prev, b1, d_curr)
+inter ||= p_curr.offset(out_curr)
+outward_pts << inter
+end
+stamp = Time.now.to_i
+room_uuid = uuid
+room_group = model.active_entities.add_group
+room_group.name = room_name
+room_group.layer = tag(model, room_name)
 
-  if face
-    pts = face.outer_loop.vertices.map { |v| v.position }
-    closed = true
-  else
-    pts = selected_line_chain_points
-    unless pts && pts.length >= 2
-      UI.messagebox(ts('حدد Lines متصلة تبدأ من أول حائط إلى آخر حائط، أو حدد Rectangle/Face.'))
-      return
-    end
-  end
 
-  # Remove duplicate final point if the selected line chain returns to the start.
-  if pts.length >= 3 && pts.first.distance(pts.last) < 0.001
-    pts = pts[0...-1]
-    closed = true
-  end
+# ✅ جديد: حفظ محيط الغرفة والبيانات الكاملة للتعديل الذكي
+save_room_pts(room_group, pts)
+save_build_data(room_group, data)
 
-  # For a selected Face we always have a closed polygon.
-  closed = true if face
-
-  pts.reverse! if closed && signed_area_xy(pts) < 0
-
-  room_name = data['room_name'].to_s.strip
-  room_name = ts('الغرفة') if room_name.empty?
-  wall_h_cm  = data['wall_h'].to_f
-  wall_t_cm  = data['wall_t'].to_f
-  floor_t_cm = data['floor_t'].to_f
-  ceil_t_cm  = data['ceil_t'].to_f
-  # Keep the user's UI choices authoritative. For an open Edge path with
-  # 3+ points, a temporary closing segment is used ONLY for Floor/Ceiling
-  # construction; the actual wall path remains open.
-  can_enclose = pts.length >= 3
-  create_floor = enabled_value?(data['create_floor']) && (closed || can_enclose)
-  create_ceiling = enabled_value?(data['create_ceiling']) && (closed || can_enclose)
-  ceiling_pattern = data['ceiling_pattern'].to_s
-
-  if wall_h_cm <= 0 || wall_t_cm <= 0
-    UI.messagebox(ts('ارتفاع وسمك الحائط لازم يكونوا أكبر من صفر'))
-    return
-  end
-
-  # Reject zero-length segments before creating any SketchUp definitions.
-  bad_segment = pts.each_with_index.any? do |p, i|
-    q = pts[(i + 1) % pts.length]
-    p.distance(q) <= 0.1.mm
-  end
-  if bad_segment
-    UI.messagebox(ts('يوجد Line بطول صفر أو نقطتان متطابقتان. صحح الرسم ثم أعد المحاولة.'))
-    return
-  end
-
-  wall_h  = wall_h_cm.cm
-  wall_t  = wall_t_cm.cm
-  floor_t = floor_t_cm.cm
-  ceil_t  = ceil_t_cm.cm
-
-  model.start_operation('MHD Room Builder', true)
-  begin
-    stamp = Time.now.to_i
-    room_uuid = uuid
-    room_group = begin
-      model.entities.add_group
-    rescue
-      model.active_entities.add_group
-    end
-
-    room_group.name = room_name
-    room_group.layer = tag(model, room_name)
-    room_group.set_attribute(DICT, 'Wall_Builder_Mode', face ? 'Face' : 'Edges')
-
-    save_room_pts(room_group, pts)
-    save_build_data(room_group, data.merge('open_path' => (!closed)))
-
-    set_attrs(room_group, {
-      'UUID' => room_uuid,
-      'النوع' => 'غرفة',
+set_attrs(room_group, {
+  'UUID' => room_uuid,
+  'النوع' => 'غرفة',
+  'اسم الغرفة' => room_name,
+  'ارتفاع الحائط سم' => wall_h_cm,
+  'سمك الحائط سم' => wall_t_cm,
+  'سمك الأرضية سم' => floor_t_cm,
+  'سمك السقف سم' => ceil_t_cm,
+  'إنشاء أرضية' => create_floor ? 'نعم' : 'لا',
+  'إنشاء سقف' => create_ceiling ? 'نعم' : 'لا',
+  'نمط السقف' => ceiling_pattern,
+  'طريقة حساب السقوط' => data['drop_reference'].to_s,
+  'تاريخ الإنشاء' => Time.now.strftime('%Y-%m-%d %H:%M')
+})
+room_group.set_attribute(DICT, 'shatras_json', [].to_json)
+room_group.set_attribute(DICT, 'beams_json', [].to_json)
+room_ents = room_group.entities
+if create_floor && floor_t > 0
+  floor_def = model.definitions.add("#{room_name}_أرضية_#{stamp}")
+  floor_face = floor_def.entities.add_face(outward_pts)
+  if floor_face
+    floor_face.reverse! if floor_face.normal.z < 0
+    floor_face.pushpull(-floor_t)
+    floor_inst = room_ents.add_instance(floor_def, Geom::Transformation.new)
+    floor_inst.name = ts('الأرضية')
+    floor_inst.layer = tag(model, "#{room_name} | #{ts('الأرضية')}")
+    set_attrs(floor_inst, {
+      'UUID' => uuid,
+      'Room_UUID' => room_uuid,
+      'النوع' => 'أرضية',
       'اسم الغرفة' => room_name,
-      'ارتفاع الحائط سم' => wall_h_cm,
-      'سمك الحائط سم' => wall_t_cm,
-      'سمك الأرضية سم' => floor_t_cm,
-      'سمك السقف سم' => ceil_t_cm,
-      'إنشاء أرضية' => enabled_value?(data['create_floor']) ? 'نعم' : 'لا',
-      'إنشاء سقف' => enabled_value?(data['create_ceiling']) ? 'نعم' : 'لا',
-      'مسار مفتوح' => closed ? 'لا' : 'نعم',
-      'نمط السقف' => ceiling_pattern,
-      'طريقة حساب السقوط' => data['drop_reference'].to_s,
-      'تاريخ الإنشاء' => Time.now.strftime('%Y-%m-%d %H:%M')
+      'السمك سم' => floor_t_cm
     })
-    room_group.set_attribute(DICT, 'shatras_json', [].to_json)
-    room_group.delete_attribute(DICT, 'shatra_base_room_pts_json') rescue nil
-    room_group.set_attribute(DICT, 'beams_json', [].to_json)
-
-    outward_pts, wall_quads = build_wall_geometry_data(pts, wall_t, closed)
-
-    # For open Edge paths, build a closed auxiliary outline for Floor/Ceiling
-    # without turning the missing closing side into a wall. This keeps the
-    # user's Edge-based walls open while still honoring all checked build options.
-    enclosure_pts = pts.dup
-    enclosure_closed = closed
-    if !closed && can_enclose
-      enclosure_pts = pts.dup
-      enclosure_closed = true
-    end
-    enclosure_outward = if enclosure_closed
-      compute_outward_pts_per_wall(enclosure_pts, wall_t, nil)
-    end
-
-    room_group.set_attribute(DICT, 'enclosure_pts_json', enclosure_pts.map { |p| [p.x.to_f, p.y.to_f, p.z.to_f] }.to_json) if enclosure_closed
-    room_group.set_attribute(DICT, 'Floor_Ceiling_Enclosure', enclosure_closed ? 'نعم' : 'لا')
-
-    room_ents = room_group.entities
-
-    if create_floor && floor_t > 0 && enclosure_outward
-      floor_def = model.definitions.add("#{room_name}_أرضية_#{stamp}_#{rand(9999)}")
-      floor_face = floor_def.entities.add_face(enclosure_outward)
-      if floor_face
-        floor_face.reverse! if floor_face.normal.z < 0
-        floor_face.pushpull(-floor_t)
-        stable_floor = stable_floor_material(model)
-        if stable_floor
-          floor_def.entities.grep(Sketchup::Face).each do |ff|
-            ff.material = stable_floor
-            ff.back_material = stable_floor
-          end
-        end
-        floor_inst = room_ents.add_instance(floor_def, Geom::Transformation.new)
-        floor_inst.name = ts('الأرضية')
-        floor_inst.layer = tag(model, "#{room_name} | #{ts('الأرضية')}")
-        set_attrs(floor_inst, {
-          'UUID' => uuid,
-          'Room_UUID' => room_uuid,
-          'النوع' => 'أرضية',
-          'اسم الغرفة' => room_name,
-          'السمك سم' => floor_t_cm
-        })
-      end
-    end
-
-    if create_ceiling && ceil_t > 0 && enclosure_outward
-      build_ceiling(model, room_ents, room_name, room_uuid, enclosure_outward,
-                    enclosure_pts, wall_h, ceil_t, ceil_t_cm, data)
-    end
-
-    wall_quads.each_with_index do |quad, i|
-      p1, p2, p3, p4 = quad
-      wall_number = format('%02d', i + 1)
-      wall_name = "#{ts('حائط')} #{wall_number}"
-      wall_def = model.definitions.add("#{room_name}_#{wall_name}_#{stamp}_#{rand(9999)}")
-      add_prism(wall_def.entities, p1, p2, p3, p4, 0, wall_h)
-      wall_inst = room_ents.add_instance(wall_def, Geom::Transformation.new)
-      wall_tag_name = "#{room_name} | #{wall_name}".to_s
-      wall_inst.name = wall_name.to_s
-      wall_inst.layer = tag(model, wall_tag_name)
-      set_attrs(wall_inst, {
-        'UUID' => uuid,
-        'Room_UUID' => room_uuid,
-        'النوع' => 'حائط',
-        'اسم الغرفة' => room_name,
-        'رقم الحائط' => i + 1,
-        'الاسم' => wall_name,
-        'الارتفاع سم' => wall_h_cm,
-        'السمك سم' => wall_t_cm,
-        'طول الحائط سم' => p1.distance(p2).to_cm.round(2),
-        'P1' => pt_to_s(p1),
-        'P2' => pt_to_s(p2),
-        'P3' => pt_to_s(p3),
-        'P4' => pt_to_s(p4),
-        'مسار مفتوح' => closed ? 'لا' : 'نعم'
-      })
-    end
-
-    # Keep the original Lines available as a hidden construction reference,
-    # but attach them to the same room so they never remain as stray Untagged geometry.
-    prepare_source_edges_after_build(source_edges, model, room_name, room_uuid) unless face
-
-    # Source Face is consumed only when a Face was selected. Open Line paths
-    # are intentionally preserved as a hidden construction reference.
-    remove_legacy_source_floor_geometry(pts) if face && closed
-    model.commit_operation
-    UI.messagebox(ts(closed ? 'تم بناء الغرفة والحوائط وكل العناصر المحددة بنجاح' : 'تم بناء الحوائط والمسار مفتوح — وتم إنشاء الأرضية والسقف من حدود الإغلاق الافتراضية حسب الإعدادات'))
-  rescue => e
-    model.abort_operation rescue nil
-    UI.messagebox("Error:\n#{e.message}")
   end
+end
+if create_ceiling && ceil_t > 0
+  build_ceiling(model, room_ents, room_name, room_uuid, outward_pts,
+                pts, wall_h, ceil_t, ceil_t_cm, data)
+end
+count.times do |i|
+  j = (i + 1) % count
+  wall_number = format('%02d', i + 1)
+  wall_name = "#{ts('حائط')} #{wall_number}"
+  p1 = pts[i]
+  p2 = pts[j]
+  p3 = outward_pts[j]
+  p4 = outward_pts[i]
+  wall_def = model.definitions.add("#{room_name}_#{wall_name}_#{stamp}")
+  add_prism(wall_def.entities, p1, p2, p3, p4, 0, wall_h)
+  wall_inst = room_ents.add_instance(wall_def, Geom::Transformation.new)
+  wall_inst.name = wall_name
+  wall_inst.layer = tag(model, "#{room_name} | #{wall_name}")
+  set_attrs(wall_inst, {
+    'UUID' => uuid,
+    'Room_UUID' => room_uuid,
+    'النوع' => 'حائط',
+    'اسم الغرفة' => room_name,
+    'رقم الحائط' => i + 1,
+    'الاسم' => wall_name,
+    'الارتفاع سم' => wall_h_cm,
+    'السمك سم' => wall_t_cm,
+    'طول الحائط سم' => p1.distance(p2).to_cm.round(2),
+    'P1' => pt_to_s(p1),
+    'P2' => pt_to_s(p2),
+    'P3' => pt_to_s(p3),
+    'P4' => pt_to_s(p4)
+  })
+end
+remove_legacy_source_floor_geometry(pts)
+model.commit_operation
+UI.messagebox(ts('تم بناء الغرفة بنجاح'))
+
+
+rescue => e
+model.abort_operation rescue nil
+UI.messagebox("Error:\n#{e.message}")
 end
 
 def build
 dialog_input
 end
-
-
 
 unless file_loaded?(__FILE__)
 UI.add_context_menu_handler do |menu|
@@ -3638,12 +3058,11 @@ model = Sketchup.active_model
 selection = model.selection.to_a
 
 
-  # بناء غرفة من Face أو Lines متصلة
-  if selected_face || Sketchup.active_model.selection.grep(Sketchup::Edge).any?
+  # بناء غرفة جديدة من Face محدد
+  if selected_face
     menu.add_separator
     menu.add_item(ts(MENU_BUILD)) { build }
   end
-
 
   # تعديل غرفة موجودة
   room_group = nil
@@ -3676,10 +3095,7 @@ selection = model.selection.to_a
   end
 end
 
-# لا يتم تشغيل أداة رسم حوائط تفاعلية؛ الرسم يتم من أدوات SketchUp Line / Rectangle أو أي Edges محددة ثم يتم بناء الحوائط مباشرة.
-
-build_menu = UI.menu('Plugins')
-
+# قائمة Plugins للأداة التفاعلية
 UI.menu('Plugins').add_item(ts('MHD - تعديل غرفة (نقر تفاعلي)')) do
   activate_room_edit_picker
 end
@@ -3696,7 +3112,6 @@ end
 UI.menu('Plugins').add_item(ts('MHD - شطرة الحائط (ضبط الزوايا)')) do
   activate_shatra_picker
 end
-
 
 file_loaded(__FILE__)
 
