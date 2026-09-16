@@ -591,7 +591,7 @@ set_attrs(wall_inst, {
 'UUID' => uuid,
 'Room_UUID' => room_uuid,
 'النوع' => 'حائط',
-'اسم الغرفة' => room_name,
+'اسم المطبخ' => room_name,
 'رقم الحائط' => i + 1,
 'الاسم' => wall_name,
 'الارتفاع سم' => wall_h_cm,
@@ -659,9 +659,9 @@ def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, 
     'UUID' => uuid,
     'Room_UUID' => room_uuid,
     'النوع' => 'أرضية',
-    'اسم الغرفة' => room_name,
+    'اسم المطبخ' => room_name,
     'السمك سم' => floor_t_cm.to_f,
-    'حدود الغرفة' => pts.map { |q| pt_to_s(q) }.to_json
+    'حدود المطبخ' => pts.map { |q| pt_to_s(q) }.to_json
   })
   floor_inst
 end
@@ -679,7 +679,7 @@ room_uuid = room_group.get_attribute(DICT, 'UUID').to_s
 room_uuid = uuid if room_uuid.empty?
 name_old = old_data['room_name'].to_s
 name_new = new_data['room_name'].to_s
-name_new = ts('الغرفة') if name_new.strip.empty?
+name_new = ts('المطبخ') if name_new.strip.empty?
 wall_h_old = old_data['wall_h'].to_f
 wall_h_new = new_data['wall_h'].to_f
 wall_t_old = old_data['wall_t'].to_f
@@ -768,7 +768,7 @@ ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual ||
   rebuild_all_beams(room_group)
   rebuild_all_shatras(room_group) if respond_to?(:rebuild_all_shatras)
   save_build_data(room_group, new_data)
-  room_group.set_attribute(DICT, 'اسم الغرفة', name_new)
+  room_group.set_attribute(DICT, 'اسم المطبخ', name_new)
   room_group.set_attribute(DICT, 'ارتفاع الحائط سم', wall_h_new)
   room_group.set_attribute(DICT, 'سمك الحائط سم', wall_t_new)
   room_group.set_attribute(DICT, 'سمك الأرضية سم', floor_t_new)
@@ -780,7 +780,7 @@ ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual ||
 
   model.commit_operation
   model.active_view.invalidate
-  UI.messagebox("✅ #{ts('تم تعديل الغرفة بنجاح')}")
+  UI.messagebox("✅ #{ts('تم تعديل المطبخ بنجاح')}")
   true
 rescue => e
   model.abort_operation rescue nil
@@ -794,7 +794,7 @@ end
 def rebuild_entire_room(room_group, new_data)
 pts = room_pts_from_group(room_group)
 unless pts
-UI.messagebox("❌ لا يمكن قراءة محيط الغرفة الأصلي.")
+UI.messagebox("❌ لا يمكن قراءة محيط المطبخ الأصلي.")
 return false
 end
 model = Sketchup.active_model
@@ -803,7 +803,7 @@ begin
 room_uuid = room_group.get_attribute(DICT, 'UUID').to_s
 room_uuid = uuid if room_uuid.empty?
 name = new_data['room_name'].to_s.strip
-name = ts('الغرفة') if name.empty?
+name = ts('المطبخ') if name.empty?
 wall_h_cm  = new_data['wall_h'].to_f
 wall_t_cm  = new_data['wall_t'].to_f
 floor_t_cm = new_data['floor_t'].to_f
@@ -825,14 +825,14 @@ rebuild_all_beams(room_group) if respond_to?(:rebuild_all_beams)
 room_group.name = name
 room_group.layer = tag(model, name)
 save_build_data(room_group, new_data)
-room_group.set_attribute(DICT, 'اسم الغرفة', name)
+room_group.set_attribute(DICT, 'اسم المطبخ', name)
 room_group.set_attribute(DICT, 'ارتفاع الحائط سم', wall_h_cm)
 room_group.set_attribute(DICT, 'سمك الحائط سم', wall_t_cm)
 room_group.set_attribute(DICT, 'سمك الأرضية سم', floor_t_cm)
 room_group.set_attribute(DICT, 'سمك السقف سم', ceil_t_cm)
 model.commit_operation
 model.active_view.invalidate
-UI.messagebox("✅ #{ts('تم إعادة بناء الغرفة بنجاح')}")
+UI.messagebox("✅ #{ts('تم إعادة بناء المطبخ بنجاح')}")
 true
 rescue => e
 model.abort_operation rescue nil
@@ -845,12 +845,12 @@ def open_edit_room_dialog(room_group)
 return unless room_group && room_group.valid?
 saved = build_data_from_group(room_group)
 unless saved && !saved.empty?
-UI.messagebox("⚠️ لا توجد بيانات محفوظة لهذه الغرفة.")
+UI.messagebox("⚠️ لا توجد بيانات محفوظة لهذه المطبخ.")
 return
 end
 merged = saved_values.merge(saved)
 dlg = UI::HtmlDialog.new(
-dialog_title: "#{ts('تعديل الغرفة')} - MRDESIGN",
+dialog_title: "#{ts('تعديل المطبخ')} - MRDESIGN",
 preferences_key: PREF_KEY,
 scrollable: false,
 resizable: true,
@@ -878,7 +878,7 @@ end
 
 class RoomEditPickTool
 def activate
-Sketchup.status_text = ts('انقر على أي جزء من الغرفة لتعديل خصائصها')
+Sketchup.status_text = ts('انقر على أي جزء من المطبخ لتعديل خصائصها')
 end
 def onLButtonDown(_flags, x, y, view)
 ph = view.pick_helper
@@ -1182,7 +1182,7 @@ def synchronize_room_geometry(room_group, pts, room_data)
   room_uuid = uuid if room_uuid.empty?
   data = room_data || {}
   name = data['room_name'].to_s.strip
-  name = ts('الغرفة') if name.empty?
+  name = ts('المطبخ') if name.empty?
   wall_h_cm = data['wall_h'].to_f
   wall_t_cm = data['wall_t'].to_f
   floor_t_cm = data['floor_t'].to_f
@@ -1190,7 +1190,7 @@ def synchronize_room_geometry(room_group, pts, room_data)
   floor_on = enabled_value?(data['create_floor'])
   ceiling_on = enabled_value?(data['create_ceiling'])
 
-  raise 'نقاط الغرفة غير صالحة' unless pts.is_a?(Array) && pts.length >= 3 && polygon_valid_for_wall_edit?(pts)
+  raise 'نقاط المطبخ غير صالحة' unless pts.is_a?(Array) && pts.length >= 3 && polygon_valid_for_wall_edit?(pts)
 
   outward = compute_outward_pts(pts, wall_t_cm.cm)
   raise 'تعذر حساب حدود الحوائط' unless outward && outward.length == pts.length
@@ -1213,7 +1213,7 @@ def synchronize_room_geometry(room_group, pts, room_data)
 
   save_room_pts(room_group, pts)
   save_build_data(room_group, data)
-  room_group.set_attribute(DICT, 'اسم الغرفة', name)
+  room_group.set_attribute(DICT, 'اسم المطبخ', name)
   room_group.set_attribute(DICT, 'ارتفاع الحائط سم', wall_h_cm)
   room_group.set_attribute(DICT, 'سمك الحائط سم', wall_t_cm)
   room_group.set_attribute(DICT, 'سمك الأرضية سم', floor_t_cm)
@@ -1382,21 +1382,21 @@ input:focus,select:focus{outline:2px solid #39a245;background:#0d1b25}
 <div class="app">
 <div class="scroll">
 <div class="title">🧱 تعديل الحائط ##{wall_number}</div>
-<div class="sub">تعديل بارامتري للحائط مع تحديث الغرفة والعناصر المرتبطة</div>
+<div class="sub">تعديل بارامتري للحائط مع تحديث المطبخ والعناصر المرتبطة</div>
 <div class="card">
 <div class="big"><span id="length_big">#{v['length_cm']}</span> سم</div>
 <div class="row"><label>طول الحائط سم</label><div class="length-wrap"><button class="step" onclick="step(-1)">−</button><input id="length" type="number" step="0.1" min="1" value="#{v['length_cm']}" oninput="syncRange()"><button class="step" onclick="step(1)">+</button></div></div>
 <input id="length_range" class="range" type="range" min="1" max="2000" step="1" value="#{v['length_cm']}" oninput="syncInput()">
-<div class="hint">تقدر تزود أو تقلل طول الحائط، وتحدد نقطة التثبيت، وتختار هل التعديل يؤثر على الحائط المحدد فقط أم يحافظ على تماثل الغرفة.</div>
+<div class="hint">تقدر تزود أو تقلل طول الحائط، وتحدد نقطة التثبيت، وتختار هل التعديل يؤثر على الحائط المحدد فقط أم يحافظ على تماثل المطبخ.</div>
 </div>
 <div class="card">
 <div class="row"><label>نقطة التثبيت</label><select id="anchor"><option value="start">تثبيت بداية الحائط</option><option value="end">تثبيت نهاية الحائط</option><option value="center">تثبيت المنتصف</option></select></div>
-<div class="row"><label>نمط التعديل</label><select id="edit_mode"><option value="single">🎯 حائط واحد فقط — لا تحرك المقابل</option><option value="auto">🧠 ذكي — حافظ على استقامة الغرفة</option><option value="opposite">↔️ الحائط + المقابل معًا</option></select></div>
+<div class="row"><label>نمط التعديل</label><select id="edit_mode"><option value="single">🎯 حائط واحد فقط — لا تحرك المقابل</option><option value="auto">🧠 ذكي — حافظ على استقامة المطبخ</option><option value="opposite">↔️ الحائط + المقابل معًا</option></select></div>
 <div class="row"><label>ارتفاع الحائط سم</label><input id="height" type="number" step="0.1" min="1" value="#{v['height_cm']}"></div>
 <div class="row"><label>سمك الحائط سم</label><input id="thickness" type="number" step="0.1" min="0.1" value="#{v['thickness_cm']}"></div>
 <div class="row"><label>اسم الحائط</label><input id="name" type="text" value="#{safe_name}"></div>
 </div>
-<div class="card"><b>⚡ تحديث ديناميكي</b><div class="hint">بعد الحفظ يتم إعادة حساب شكل الغرفة، الأرضية، السقف، والحوائط. الكمرات المرتبطة بالحائط يعاد بناؤها تلقائياً على الشكل الجديد.</div></div>
+<div class="card"><b>⚡ تحديث ديناميكي</b><div class="hint">بعد الحفظ يتم إعادة حساب شكل المطبخ، الأرضية، السقف، والحوائط. الكمرات المرتبطة بالحائط يعاد بناؤها تلقائياً على الشكل الجديد.</div></div>
 </div>
 <div class="footer"><button class="btn save" onclick="submitData()">💾 تطبيق التعديل</button><button class="btn cancel" onclick="sketchup.cancel()">إغلاق</button></div>
 </div>
@@ -1684,7 +1684,7 @@ def apply_shatra_calibration(room_group, corner_idx, data, mode = :apply)
 
   pts = room_pts_from_group(room_group)
   unless pts && pts.length >= 3
-    UI.messagebox('❌ لا يمكن قراءة نقاط الغرفة.')
+    UI.messagebox('❌ لا يمكن قراءة نقاط المطبخ.')
     return false
   end
 
@@ -1776,7 +1776,7 @@ def delete_shatra(room_group, shatra_uuid)
     pts = room_pts_from_group(room_group)
     unless pts && pts.length >= 3
       model.abort_operation rescue nil
-      UI.messagebox('❌ لا يمكن قراءة نقاط الغرفة.')
+      UI.messagebox('❌ لا يمكن قراءة نقاط المطبخ.')
       return false
     end
 
@@ -1789,7 +1789,7 @@ def delete_shatra(room_group, shatra_uuid)
       pts[corner_idx] = Geom::Point3d.new(original_pts[1][0].to_f, original_pts[1][1].to_f, original_pts[1][2].to_f)
       pts[next_i] = Geom::Point3d.new(original_pts[2][0].to_f, original_pts[2][1].to_f, original_pts[2][2].to_f)
 
-      # إعادة بناء الغرفة بنقاط الركن الأصلية
+      # إعادة بناء المطبخ بنقاط الركن الأصلية
       room_data = build_data_from_group(room_group) || {}
       old_pts = room_pts_from_group(room_group).map(&:clone)
       remove_legacy_source_floor_geometry(old_pts)
@@ -1885,7 +1885,7 @@ button:active{transform:scale(0.98)}
 <div class="app" id="app">
 <div class="scroll">
   <div class="title">📐 شطرة الحائط</div>
-  <div class="sub">شطرة ذكية مرتبطة مباشرة بالركن والحائط والغرفة</div>
+  <div class="sub">شطرة ذكية مرتبطة مباشرة بالركن والحائط والمطبخ</div>
 
   <div class="card">
     <div class="row"><label>المقاس الأول من الركن (سم)</label><input id="a" type="number" min="0.1" step="0.1" value="#{a0}"></div>
@@ -2132,7 +2132,7 @@ def wall_info(wall)
     'wall_t_cm' => wall.get_attribute(DICT, 'السمك سم').to_f,
     'number' => wall.get_attribute(DICT, 'رقم الحائط').to_i,
     'name' => wall.name.to_s,
-    'room_name' => wall.get_attribute(DICT, 'اسم الغرفة').to_s,
+    'room_name' => wall.get_attribute(DICT, 'اسم المطبخ').to_s,
     'room_uuid' => wall.get_attribute(DICT, 'Room_UUID').to_s
   }
 end
@@ -2239,7 +2239,7 @@ def build_single_beam(model, room_group, wall, spec)
     'UUID' => spec['uuid'],
     'Room_UUID' => info['room_uuid'],
     'النوع' => 'كمر',
-    'اسم الغرفة' => info['room_name'],
+    'اسم المطبخ' => info['room_name'],
     'رقم الحائط' => info['number'],
     'الحائط' => info['name'],
     'رقم الكمر' => spec['number'],
@@ -2283,7 +2283,7 @@ def rename_beam_tags_for_room(room_group)
     wall = find_wall_in_room(room_group, spec['wall_number'])
     next unless wall
     spec['wall_name'] = wall.name.to_s
-    spec['room_name'] = wall.get_attribute(DICT, 'اسم الغرفة').to_s
+    spec['room_name'] = wall.get_attribute(DICT, 'اسم المطبخ').to_s
   end
   save_beams(room_group, beams)
   rebuild_all_beams(room_group)
@@ -2611,9 +2611,9 @@ button{height:40px;border-radius:10px;font-size:14px;font-weight:900;cursor:poin
 </div>
 <div class="wrap">
 <div class="group">
-<div class="group-title">▼ بيانات الغرفة</div>
+<div class="group-title">▼ بيانات المطبخ</div>
 <div class="group-body">
-<div class="field-row"><label>اسم الغرفة</label><input id="room_name" type="text" value="#{v['room_name']}"></div>
+<div class="field-row"><label>اسم المطبخ</label><input id="room_name" type="text" value="#{v['room_name']}"></div>
 </div>
 </div>
 <div class="group">
@@ -2823,7 +2823,7 @@ wall_h, ceil_t, ceil_t_cm, data)
 pattern = data['ceiling_pattern'].to_s
 pattern = 'flat' unless %w[flat perimeter center center_hidden_led double_hidden_led strips hidden_cove].include?(pattern)
 common = {
-'Room_UUID' => room_uuid, 'النوع' => 'سقف', 'اسم الغرفة' => room_name,
+'Room_UUID' => room_uuid, 'النوع' => 'سقف', 'اسم المطبخ' => room_name,
 'نمط السقف' => pattern, 'السمك سم' => ceil_t_cm
 }
 ceiling_def = model.definitions.add("#{room_name}_السقف_الكامل_#{Time.now.to_i}_#{rand(99999)}")
@@ -3068,7 +3068,7 @@ glow_intensity = [[data['glow_intensity'].to_f, 0.0].max, 100.0].min
 glow_size = [data['glow_size'].to_f.cm, 0.0].max
 groove_mat = led_material(model, color, true)
 attrs = {
-'Room_UUID' => room_uuid, 'اسم الغرفة' => room_name,
+'Room_UUID' => room_uuid, 'اسم المطبخ' => room_name,
 'عرض المجرى سم' => data['light_width'].to_f,
 'عمق المجرى سم' => data['light_depth'].to_f,
 'لون الإضاءة' => color,
@@ -3159,7 +3159,7 @@ UI.messagebox(ts('حدد Face الأرضية الأول'))
 return
 end
 room_name = data['room_name'].to_s.strip
-room_name = ts('الغرفة') if room_name.empty?
+room_name = ts('المطبخ') if room_name.empty?
 wall_h_cm  = data['wall_h'].to_f
 wall_t_cm  = data['wall_t'].to_f
 floor_t_cm = data['floor_t'].to_f
@@ -3212,7 +3212,7 @@ save_build_data(room_group, data)
 set_attrs(room_group, {
   'UUID' => room_uuid,
   'النوع' => 'غرفة',
-  'اسم الغرفة' => room_name,
+  'اسم المطبخ' => room_name,
   'ارتفاع الحائط سم' => wall_h_cm,
   'سمك الحائط سم' => wall_t_cm,
   'سمك الأرضية سم' => floor_t_cm,
@@ -3239,7 +3239,7 @@ if create_floor && floor_t > 0
       'UUID' => uuid,
       'Room_UUID' => room_uuid,
       'النوع' => 'أرضية',
-      'اسم الغرفة' => room_name,
+      'اسم المطبخ' => room_name,
       'السمك سم' => floor_t_cm
     })
   end
@@ -3265,7 +3265,7 @@ count.times do |i|
     'UUID' => uuid,
     'Room_UUID' => room_uuid,
     'النوع' => 'حائط',
-    'اسم الغرفة' => room_name,
+    'اسم المطبخ' => room_name,
     'رقم الحائط' => i + 1,
     'الاسم' => wall_name,
     'الارتفاع سم' => wall_h_cm,
@@ -3279,7 +3279,7 @@ count.times do |i|
 end
 remove_legacy_source_floor_geometry(pts)
 model.commit_operation
-UI.messagebox(ts('تم بناء الغرفة بنجاح'))
+UI.messagebox(ts('تم بناء المطبخ بنجاح'))
 
 
 rescue => e
@@ -3310,7 +3310,7 @@ selection = model.selection.to_a
 
   if room_group
     menu.add_separator
-    menu.add_item(ts('⚙️ تعديل الغرفة')) { open_edit_room_dialog(room_group) }
+    menu.add_item(ts('⚙️ تعديل المطبخ')) { open_edit_room_dialog(room_group) }
 
     wall_entity = selection.find do |entity|
       entity.respond_to?(:get_attribute) &&
