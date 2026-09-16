@@ -21,7 +21,7 @@ extend self
 MENU_BUILD = 'بناء الحوائط'
 DICT = 'MHD_ROOM_BUILDER'
 PREF_KEY = 'MHD_ROOM_BUILDER_UI'
-LOGO_URL = 'https://i.ibb.co/LXLdnbMw/Gemini-Generated-Image-sm7mc3sm7mc3sm7m-removebg-preview.png'
+LOGO_URL = 'https://mhdesign-eg.com/SKETCHUP/components/logo3.png'
 
 # حالة المعاينة المؤقتة (لكل غرفة)
 @preview_states = {}
@@ -518,7 +518,8 @@ rescue
   nil
 end
 
-# ✅ جديد: التقاط معلومات المادة الكاملة (front + back + وجودها)
+# ✅ التقاط معلومات المادة الكاملة (front + back + وجودها)
+# مهم: لازم تُستدعى قبل حذف الأرضية
 def capture_floor_material_info(room_group)
   room_group.entities.to_a.each do |e|
     next unless e.valid?
@@ -616,7 +617,7 @@ set_attrs(wall_inst, {
 'UUID' => uuid,
 'Room_UUID' => room_uuid,
 'النوع' => 'حائط',
-'اسم المطبخ' => room_name,
+'اسم الغرفة' => room_name,
 'رقم الحائط' => i + 1,
 'الاسم' => wall_name,
 'الارتفاع سم' => wall_h_cm,
@@ -631,11 +632,12 @@ end
 end
 
 # ✅ الأرضية لا تُغيّر لونها إجبارياً عند إعادة البناء
-def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, room_uuid)
+# المعامل mat_info يُمرَّر من الخارج (يُلتقط قبل حذف الأرضية القديمة)
+def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, room_uuid, mat_info = nil)
   model = Sketchup.active_model
 
-  # التقط معلومات مادة الأرضية الأصلية بدقة قبل الحذف
-  mat_info = capture_floor_material_info(room_group)
+  # لو مفيش mat_info مُمرَّرة، نحاول نلتقط المادة من الأرضية الحالية (قبل الحذف)
+  mat_info ||= capture_floor_material_info(room_group)
 
   delete_room_parts(room_group, 'أرضية')
   return if floor_t.to_f <= 0 || !outward_pts || outward_pts.length < 3
@@ -650,9 +652,7 @@ def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, 
   floor_face.reverse! if floor_face.normal.z < 0
   floor_face.pushpull(-floor_t)
 
-  # لا نغيّر لون الأرضية إجبارياً:
-  # - لو الأرضية الأصلية بدون مادة → نتركها بدون مادة (تستخدم افتراضي SketchUp)
-  # - لو لها مادة → نُطبّق نفس المادة للحفاظ على المظهر تماماً
+  # ✅ نُطبّق نفس مادة الأرضية الأصلية (front + back) بدون أي تغيير إجباري
   if mat_info['has_front'] || mat_info['has_back']
     front_mat = mat_info['has_front'] ? model.materials[mat_info['front_name']] : nil
     back_mat  = mat_info['has_back']  ? model.materials[mat_info['back_name']]  : nil
@@ -666,6 +666,7 @@ def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, 
       end
     end
   end
+  # لو مفيش مادة أصلية، نتركها كما هي (بدون مادة) — نستخدم افتراضي SketchUp
 
   floor_def.entities.grep(Sketchup::Edge).each do |edge|
     begin
@@ -683,9 +684,9 @@ def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, 
     'UUID' => uuid,
     'Room_UUID' => room_uuid,
     'النوع' => 'أرضية',
-    'اسم المطبخ' => room_name,
+    'اسم الغرفة' => room_name,
     'السمك سم' => floor_t_cm.to_f,
-    'حدود المطبخ' => pts.map { |q| pt_to_s(q) }.to_json
+    'حدود الغرفة' => pts.map { |q| pt_to_s(q) }.to_json
   })
   floor_inst
 end
@@ -703,7 +704,7 @@ room_uuid = room_group.get_attribute(DICT, 'UUID').to_s
 room_uuid = uuid if room_uuid.empty?
 name_old = old_data['room_name'].to_s
 name_new = new_data['room_name'].to_s
-name_new = ts('المطبخ') if name_new.strip.empty?
+name_new = ts('الغرفة') if name_new.strip.empty?
 wall_h_old = old_data['wall_h'].to_f
 wall_h_new = new_data['wall_h'].to_f
 wall_t_old = old_data['wall_t'].to_f
@@ -728,6 +729,8 @@ ceiling_visual   = ceiling_settings_differ?(old_data, new_data)
 light_changed    = light_settings_differ?(old_data, new_data)
 ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual || light_changed
 
+# ✅ نلتقط معلومات مادة الأرضية قبل أي حذف
+floor_mat_info = capture_floor_material_info(room_group)
 
   if name_changed
     begin
@@ -756,7 +759,7 @@ ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual ||
                        wall_h_new, wall_t_new, name_new, room_uuid)
     delete_room_parts(room_group, 'أرضية')
     rebuild_room_floor(room_group, new_outward, floor_t_new.cm,
-                       floor_t_new, name_new, room_uuid) if floor_on_new && floor_t_new > 0
+                       floor_t_new, name_new, room_uuid, floor_mat_info) if floor_on_new && floor_t_new > 0
     delete_room_parts(room_group, 'سقف')
     if ceiling_on_new && ceil_t_new > 0
       build_ceiling(model, room_group.entities, name_new, room_uuid,
@@ -773,7 +776,7 @@ ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual ||
       current_outward = compute_outward_pts(pts, wall_t_old.cm)
       if floor_on_new && floor_t_new > 0
         rebuild_room_floor(room_group, current_outward, floor_t_new.cm,
-                           floor_t_new, name_new, room_uuid)
+                           floor_t_new, name_new, room_uuid, floor_mat_info)
       else
         delete_room_parts(room_group, 'أرضية')
       end
@@ -792,7 +795,7 @@ ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual ||
   rebuild_all_beams(room_group)
   rebuild_all_shatras(room_group) if respond_to?(:rebuild_all_shatras)
   save_build_data(room_group, new_data)
-  room_group.set_attribute(DICT, 'اسم المطبخ', name_new)
+  room_group.set_attribute(DICT, 'اسم الغرفة', name_new)
   room_group.set_attribute(DICT, 'ارتفاع الحائط سم', wall_h_new)
   room_group.set_attribute(DICT, 'سمك الحائط سم', wall_t_new)
   room_group.set_attribute(DICT, 'سمك الأرضية سم', floor_t_new)
@@ -804,7 +807,7 @@ ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual ||
 
   model.commit_operation
   model.active_view.invalidate
-  UI.messagebox("✅ #{ts('تم تعديل المطبخ بنجاح')}")
+  UI.messagebox("✅ #{ts('تم تعديل الغرفة بنجاح')}")
   true
 rescue => e
   model.abort_operation rescue nil
@@ -818,7 +821,7 @@ end
 def rebuild_entire_room(room_group, new_data)
 pts = room_pts_from_group(room_group)
 unless pts
-UI.messagebox("❌ لا يمكن قراءة محيط المطبخ الأصلي.")
+UI.messagebox("❌ لا يمكن قراءة محيط الغرفة الأصلي.")
 return false
 end
 model = Sketchup.active_model
@@ -827,16 +830,20 @@ begin
 room_uuid = room_group.get_attribute(DICT, 'UUID').to_s
 room_uuid = uuid if room_uuid.empty?
 name = new_data['room_name'].to_s.strip
-name = ts('المطبخ') if name.empty?
+name = ts('الغرفة') if name.empty?
 wall_h_cm  = new_data['wall_h'].to_f
 wall_t_cm  = new_data['wall_t'].to_f
 floor_t_cm = new_data['floor_t'].to_f
 ceil_t_cm  = new_data['ceil_t'].to_f
 floor_on   = enabled_value?(new_data['create_floor'])
 ceiling_on = enabled_value?(new_data['create_ceiling'])
+
+# ✅ نلتقط مادة الأرضية قبل مسح كل العناصر
+floor_mat_info = capture_floor_material_info(room_group)
+
 room_group.entities.clear!
 outward = compute_outward_pts(pts, wall_t_cm.cm)
-rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid) if floor_on && floor_t_cm > 0
+rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid, floor_mat_info) if floor_on && floor_t_cm > 0
 if ceiling_on && ceil_t_cm > 0
 build_ceiling(model, room_group.entities, name, room_uuid,
 outward, pts,
@@ -849,14 +856,14 @@ rebuild_all_beams(room_group) if respond_to?(:rebuild_all_beams)
 room_group.name = name
 room_group.layer = tag(model, name)
 save_build_data(room_group, new_data)
-room_group.set_attribute(DICT, 'اسم المطبخ', name)
+room_group.set_attribute(DICT, 'اسم الغرفة', name)
 room_group.set_attribute(DICT, 'ارتفاع الحائط سم', wall_h_cm)
 room_group.set_attribute(DICT, 'سمك الحائط سم', wall_t_cm)
 room_group.set_attribute(DICT, 'سمك الأرضية سم', floor_t_cm)
 room_group.set_attribute(DICT, 'سمك السقف سم', ceil_t_cm)
 model.commit_operation
 model.active_view.invalidate
-UI.messagebox("✅ #{ts('تم إعادة بناء المطبخ بنجاح')}")
+UI.messagebox("✅ #{ts('تم إعادة بناء الغرفة بنجاح')}")
 true
 rescue => e
 model.abort_operation rescue nil
@@ -869,12 +876,12 @@ def open_edit_room_dialog(room_group)
 return unless room_group && room_group.valid?
 saved = build_data_from_group(room_group)
 unless saved && !saved.empty?
-UI.messagebox("⚠️ لا توجد بيانات محفوظة لهذه المطبخ.")
+UI.messagebox("⚠️ لا توجد بيانات محفوظة لهذه الغرفة.")
 return
 end
 merged = saved_values.merge(saved)
 dlg = UI::HtmlDialog.new(
-dialog_title: "#{ts('تعديل المطبخ')} - MRDESIGN",
+dialog_title: "#{ts('تعديل الغرفة')} - MRDESIGN",
 preferences_key: PREF_KEY,
 scrollable: false,
 resizable: true,
@@ -902,7 +909,7 @@ end
 
 class RoomEditPickTool
 def activate
-Sketchup.status_text = ts('انقر على أي جزء من المطبخ لتعديل خصائصها')
+Sketchup.status_text = ts('انقر على أي جزء من الغرفة لتعديل خصائصها')
 end
 def onLButtonDown(_flags, x, y, view)
 ph = view.pick_helper
@@ -1206,7 +1213,7 @@ def synchronize_room_geometry(room_group, pts, room_data)
   room_uuid = uuid if room_uuid.empty?
   data = room_data || {}
   name = data['room_name'].to_s.strip
-  name = ts('المطبخ') if name.empty?
+  name = ts('الغرفة') if name.empty?
   wall_h_cm = data['wall_h'].to_f
   wall_t_cm = data['wall_t'].to_f
   floor_t_cm = data['floor_t'].to_f
@@ -1214,10 +1221,13 @@ def synchronize_room_geometry(room_group, pts, room_data)
   floor_on = enabled_value?(data['create_floor'])
   ceiling_on = enabled_value?(data['create_ceiling'])
 
-  raise 'نقاط المطبخ غير صالحة' unless pts.is_a?(Array) && pts.length >= 3 && polygon_valid_for_wall_edit?(pts)
+  raise 'نقاط الغرفة غير صالحة' unless pts.is_a?(Array) && pts.length >= 3 && polygon_valid_for_wall_edit?(pts)
 
   outward = compute_outward_pts(pts, wall_t_cm.cm)
   raise 'تعذر حساب حدود الحوائط' unless outward && outward.length == pts.length
+
+  # ✅ نلتقط مادة الأرضية قبل أي حذف
+  floor_mat_info = capture_floor_material_info(room_group)
 
   delete_room_parts(room_group, 'حائط')
   delete_room_parts(room_group, 'أرضية')
@@ -1228,7 +1238,7 @@ def synchronize_room_geometry(room_group, pts, room_data)
   rebuild_room_walls(room_group, pts, outward, wall_h_cm.cm, wall_t_cm.cm,
                      wall_h_cm, wall_t_cm, name, room_uuid)
 
-  rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid) if floor_on && floor_t_cm > 0
+  rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid, floor_mat_info) if floor_on && floor_t_cm > 0
 
   if ceiling_on && ceil_t_cm > 0
     build_ceiling(model, room_group.entities, name, room_uuid, outward, pts,
@@ -1237,7 +1247,7 @@ def synchronize_room_geometry(room_group, pts, room_data)
 
   save_room_pts(room_group, pts)
   save_build_data(room_group, data)
-  room_group.set_attribute(DICT, 'اسم المطبخ', name)
+  room_group.set_attribute(DICT, 'اسم الغرفة', name)
   room_group.set_attribute(DICT, 'ارتفاع الحائط سم', wall_h_cm)
   room_group.set_attribute(DICT, 'سمك الحائط سم', wall_t_cm)
   room_group.set_attribute(DICT, 'سمك الأرضية سم', floor_t_cm)
@@ -1406,21 +1416,21 @@ input:focus,select:focus{outline:2px solid #39a245;background:#0d1b25}
 <div class="app">
 <div class="scroll">
 <div class="title">🧱 تعديل الحائط ##{wall_number}</div>
-<div class="sub">تعديل بارامتري للحائط مع تحديث المطبخ والعناصر المرتبطة</div>
+<div class="sub">تعديل بارامتري للحائط مع تحديث الغرفة والعناصر المرتبطة</div>
 <div class="card">
 <div class="big"><span id="length_big">#{v['length_cm']}</span> سم</div>
 <div class="row"><label>طول الحائط سم</label><div class="length-wrap"><button class="step" onclick="step(-1)">−</button><input id="length" type="number" step="0.1" min="1" value="#{v['length_cm']}" oninput="syncRange()"><button class="step" onclick="step(1)">+</button></div></div>
 <input id="length_range" class="range" type="range" min="1" max="2000" step="1" value="#{v['length_cm']}" oninput="syncInput()">
-<div class="hint">تقدر تزود أو تقلل طول الحائط، وتحدد نقطة التثبيت، وتختار هل التعديل يؤثر على الحائط المحدد فقط أم يحافظ على تماثل المطبخ.</div>
+<div class="hint">تقدر تزود أو تقلل طول الحائط، وتحدد نقطة التثبيت، وتختار هل التعديل يؤثر على الحائط المحدد فقط أم يحافظ على تماثل الغرفة.</div>
 </div>
 <div class="card">
 <div class="row"><label>نقطة التثبيت</label><select id="anchor"><option value="start">تثبيت بداية الحائط</option><option value="end">تثبيت نهاية الحائط</option><option value="center">تثبيت المنتصف</option></select></div>
-<div class="row"><label>نمط التعديل</label><select id="edit_mode"><option value="single">🎯 حائط واحد فقط — لا تحرك المقابل</option><option value="auto">🧠 ذكي — حافظ على استقامة المطبخ</option><option value="opposite">↔️ الحائط + المقابل معًا</option></select></div>
+<div class="row"><label>نمط التعديل</label><select id="edit_mode"><option value="single">🎯 حائط واحد فقط — لا تحرك المقابل</option><option value="auto">🧠 ذكي — حافظ على استقامة الغرفة</option><option value="opposite">↔️ الحائط + المقابل معًا</option></select></div>
 <div class="row"><label>ارتفاع الحائط سم</label><input id="height" type="number" step="0.1" min="1" value="#{v['height_cm']}"></div>
 <div class="row"><label>سمك الحائط سم</label><input id="thickness" type="number" step="0.1" min="0.1" value="#{v['thickness_cm']}"></div>
 <div class="row"><label>اسم الحائط</label><input id="name" type="text" value="#{safe_name}"></div>
 </div>
-<div class="card"><b>⚡ تحديث ديناميكي</b><div class="hint">بعد الحفظ يتم إعادة حساب شكل المطبخ، الأرضية، السقف، والحوائط. الكمرات المرتبطة بالحائط يعاد بناؤها تلقائياً على الشكل الجديد.</div></div>
+<div class="card"><b>⚡ تحديث ديناميكي</b><div class="hint">بعد الحفظ يتم إعادة حساب شكل الغرفة، الأرضية، السقف، والحوائط. الكمرات المرتبطة بالحائط يعاد بناؤها تلقائياً على الشكل الجديد.</div></div>
 </div>
 <div class="footer"><button class="btn save" onclick="submitData()">💾 تطبيق التعديل</button><button class="btn cancel" onclick="sketchup.cancel()">إغلاق</button></div>
 </div>
@@ -1640,7 +1650,7 @@ def rebuild_all_shatras(room_group)
   true
 end
 
-# تخزين حالة المعاينة (لون الأرضية + النقاط + الشطرات)
+# تخزين حالة المعاينة (النقاط + الشطرات + بيانات البناء)
 def preview_snapshot(room_group)
   uuid_v = room_group.get_attribute(DICT, 'UUID').to_s
   return @preview_states[uuid_v] if @preview_states && @preview_states[uuid_v]
@@ -1709,11 +1719,10 @@ def apply_shatra_calibration(room_group, corner_idx, data, mode = :apply)
 
   pts = room_pts_from_group(room_group)
   unless pts && pts.length >= 3
-    UI.messagebox('❌ لا يمكن قراءة نقاط المطبخ.')
+    UI.messagebox('❌ لا يمكن قراءة نقاط الغرفة.')
     return false
   end
 
-  # نسجل النقاط الأصلية للركن لأول مرة (قبل تطبيق الشطرة) حتى يمكن استرجاعها عند الحذف
   existing_shatra = shatra_for_corner(room_group, corner_idx)
   target_uuid = data['uuid'].to_s
   target_uuid = existing_shatra['uuid'].to_s if target_uuid.empty? && existing_shatra
@@ -1721,7 +1730,6 @@ def apply_shatra_calibration(room_group, corner_idx, data, mode = :apply)
   prev_i = (corner_idx - 1) % pts.length
   next_i = (corner_idx + 1) % pts.length
 
-  # احفظ النقاط الأصلية للركن قبل التعديل (إن لم تُحفظ من قبل)
   original_pts_for_corner = if existing_shatra && existing_shatra['original_corner_pts'].is_a?(Array)
     existing_shatra['original_corner_pts']
   else
@@ -1732,7 +1740,6 @@ def apply_shatra_calibration(room_group, corner_idx, data, mode = :apply)
     ]
   end
 
-  # في وضع المعاينة: نحفظ snapshot للحالة قبل التعديل (مرة واحدة فقط)
   preview_snapshot(room_group) if mode == :preview && !has_preview_state?(room_group)
 
   new_pts = shatra_adjust_corner_points(pts, corner_idx, angle)
@@ -1801,11 +1808,10 @@ def delete_shatra(room_group, shatra_uuid)
     pts = room_pts_from_group(room_group)
     unless pts && pts.length >= 3
       model.abort_operation rescue nil
-      UI.messagebox('❌ لا يمكن قراءة نقاط المطبخ.')
+      UI.messagebox('❌ لا يمكن قراءة نقاط الغرفة.')
       return false
     end
 
-    # إعادة الركن لحالته الأصلية إن كانت محفوظة
     if original_pts.is_a?(Array) && original_pts.length == 3
       n = pts.length
       prev_i = (corner_idx - 1) % n
@@ -1907,7 +1913,7 @@ button:active{transform:scale(0.98)}
 <div class="app" id="app">
 <div class="scroll">
   <div class="title">📐 شطرة الحائط</div>
-  <div class="sub">شطرة ذكية مرتبطة مباشرة بالركن والحائط والمطبخ</div>
+  <div class="sub">شطرة ذكية مرتبطة مباشرة بالركن والحائط والغرفة</div>
 
   <div class="card">
     <div class="row"><label>المقاس الأول من الركن (سم)</label><input id="a" type="number" min="0.1" step="0.1" value="#{a0}"></div>
@@ -2153,7 +2159,7 @@ def wall_info(wall)
     'wall_t_cm' => wall.get_attribute(DICT, 'السمك سم').to_f,
     'number' => wall.get_attribute(DICT, 'رقم الحائط').to_i,
     'name' => wall.name.to_s,
-    'room_name' => wall.get_attribute(DICT, 'اسم المطبخ').to_s,
+    'room_name' => wall.get_attribute(DICT, 'اسم الغرفة').to_s,
     'room_uuid' => wall.get_attribute(DICT, 'Room_UUID').to_s
   }
 end
@@ -2260,7 +2266,7 @@ def build_single_beam(model, room_group, wall, spec)
     'UUID' => spec['uuid'],
     'Room_UUID' => info['room_uuid'],
     'النوع' => 'كمر',
-    'اسم المطبخ' => info['room_name'],
+    'اسم الغرفة' => info['room_name'],
     'رقم الحائط' => info['number'],
     'الحائط' => info['name'],
     'رقم الكمر' => spec['number'],
@@ -2304,7 +2310,7 @@ def rename_beam_tags_for_room(room_group)
     wall = find_wall_in_room(room_group, spec['wall_number'])
     next unless wall
     spec['wall_name'] = wall.name.to_s
-    spec['room_name'] = wall.get_attribute(DICT, 'اسم المطبخ').to_s
+    spec['room_name'] = wall.get_attribute(DICT, 'اسم الغرفة').to_s
   end
   save_beams(room_group, beams)
   rebuild_all_beams(room_group)
@@ -2632,9 +2638,9 @@ button{height:40px;border-radius:10px;font-size:14px;font-weight:900;cursor:poin
 </div>
 <div class="wrap">
 <div class="group">
-<div class="group-title">▼ بيانات المطبخ</div>
+<div class="group-title">▼ بيانات الغرفة</div>
 <div class="group-body">
-<div class="field-row"><label>اسم المطبخ</label><input id="room_name" type="text" value="#{v['room_name']}"></div>
+<div class="field-row"><label>اسم الغرفة</label><input id="room_name" type="text" value="#{v['room_name']}"></div>
 </div>
 </div>
 <div class="group">
@@ -2844,7 +2850,7 @@ wall_h, ceil_t, ceil_t_cm, data)
 pattern = data['ceiling_pattern'].to_s
 pattern = 'flat' unless %w[flat perimeter center center_hidden_led double_hidden_led strips hidden_cove].include?(pattern)
 common = {
-'Room_UUID' => room_uuid, 'النوع' => 'سقف', 'اسم المطبخ' => room_name,
+'Room_UUID' => room_uuid, 'النوع' => 'سقف', 'اسم الغرفة' => room_name,
 'نمط السقف' => pattern, 'السمك سم' => ceil_t_cm
 }
 ceiling_def = model.definitions.add("#{room_name}_السقف_الكامل_#{Time.now.to_i}_#{rand(99999)}")
@@ -3089,7 +3095,7 @@ glow_intensity = [[data['glow_intensity'].to_f, 0.0].max, 100.0].min
 glow_size = [data['glow_size'].to_f.cm, 0.0].max
 groove_mat = led_material(model, color, true)
 attrs = {
-'Room_UUID' => room_uuid, 'اسم المطبخ' => room_name,
+'Room_UUID' => room_uuid, 'اسم الغرفة' => room_name,
 'عرض المجرى سم' => data['light_width'].to_f,
 'عمق المجرى سم' => data['light_depth'].to_f,
 'لون الإضاءة' => color,
@@ -3180,7 +3186,7 @@ UI.messagebox(ts('حدد Face الأرضية الأول'))
 return
 end
 room_name = data['room_name'].to_s.strip
-room_name = ts('المطبخ') if room_name.empty?
+room_name = ts('الغرفة') if room_name.empty?
 wall_h_cm  = data['wall_h'].to_f
 wall_t_cm  = data['wall_t'].to_f
 floor_t_cm = data['floor_t'].to_f
@@ -3233,7 +3239,7 @@ save_build_data(room_group, data)
 set_attrs(room_group, {
   'UUID' => room_uuid,
   'النوع' => 'غرفة',
-  'اسم المطبخ' => room_name,
+  'اسم الغرفة' => room_name,
   'ارتفاع الحائط سم' => wall_h_cm,
   'سمك الحائط سم' => wall_t_cm,
   'سمك الأرضية سم' => floor_t_cm,
@@ -3260,7 +3266,7 @@ if create_floor && floor_t > 0
       'UUID' => uuid,
       'Room_UUID' => room_uuid,
       'النوع' => 'أرضية',
-      'اسم المطبخ' => room_name,
+      'اسم الغرفة' => room_name,
       'السمك سم' => floor_t_cm
     })
   end
@@ -3286,7 +3292,7 @@ count.times do |i|
     'UUID' => uuid,
     'Room_UUID' => room_uuid,
     'النوع' => 'حائط',
-    'اسم المطبخ' => room_name,
+    'اسم الغرفة' => room_name,
     'رقم الحائط' => i + 1,
     'الاسم' => wall_name,
     'الارتفاع سم' => wall_h_cm,
@@ -3300,7 +3306,7 @@ count.times do |i|
 end
 remove_legacy_source_floor_geometry(pts)
 model.commit_operation
-UI.messagebox(ts('تم بناء المطبخ بنجاح'))
+UI.messagebox(ts('تم بناء الغرفة بنجاح'))
 
 
 rescue => e
@@ -3331,7 +3337,7 @@ selection = model.selection.to_a
 
   if room_group
     menu.add_separator
-    menu.add_item(ts('⚙️ تعديل المطبخ')) { open_edit_room_dialog(room_group) }
+    menu.add_item(ts('⚙️ تعديل الغرفة')) { open_edit_room_dialog(room_group) }
 
     wall_entity = selection.find do |entity|
       entity.respond_to?(:get_attribute) &&
