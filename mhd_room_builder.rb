@@ -23,6 +23,9 @@ DICT = 'MHD_ROOM_BUILDER'
 PREF_KEY = 'MHD_ROOM_BUILDER_UI'
 LOGO_URL = 'https://mhdesign-eg.com/SKETCHUP/components/logo3.png'
 
+# حالة المعاينة المؤقتة (لكل غرفة)
+@preview_states = {}
+
 # -------------------------
 # Helpers
 # -------------------------
@@ -453,7 +456,6 @@ nil
 end
 
 def save_build_data(room_group, data)
-# لا تمسح بيانات الكمرات عند حفظ بيانات الغرفة؛ الكمرات مرتبطة ديناميكياً بالغرفة.
 room_group.set_attribute(DICT, 'build_data_json', data.to_json)
 end
 
@@ -499,6 +501,20 @@ next unless e.is_a?(Sketchup::ComponentInstance) || e.is_a?(Sketchup::Group)
 next unless e.get_attribute(DICT, 'النوع').to_s == type.to_s
 e.erase!
 end
+end
+
+def capture_floor_material(room_group)
+  room_group.entities.to_a.each do |e|
+    next unless e.valid?
+    next unless e.is_a?(Sketchup::ComponentInstance)
+    next unless e.get_attribute(DICT, 'النوع').to_s == 'أرضية'
+    e.definition.entities.grep(Sketchup::Face).each do |f|
+      return f.material if f.material
+    end
+  end
+  nil
+rescue
+  nil
 end
 
 def ceiling_settings_differ?(old_d, new_d)
@@ -591,10 +607,13 @@ end
 
 def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, room_uuid)
   model = Sketchup.active_model
+
+  # احتفظ بمادة الأرضية الأصلية قبل الحذف حتى لا يتغير اللون إجبارياً.
+  preserved_material = capture_floor_material(room_group)
+
   delete_room_parts(room_group, 'أرضية')
   return if floor_t.to_f <= 0 || !outward_pts || outward_pts.length < 3
 
-  # الأرضية دائماً تُبنى من Room Geometry الحالية فقط وعلى Z=0.
   pts = outward_pts.map { |p| Geom::Point3d.new(p.x, p.y, 0) }
   return unless polygon_usable?(pts)
 
@@ -605,14 +624,17 @@ def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, 
   floor_face.reverse! if floor_face.normal.z < 0
   floor_face.pushpull(-floor_t)
 
-  # مادة مستقرة للأرضية حتى لا تتحول للون الأسود عند إعادة بناء الركن/الشطرة.
-  floor_mat_name = 'MHD Floor Neutral'
-  floor_mat = model.materials[floor_mat_name] || model.materials.add(floor_mat_name)
-  begin
-    floor_mat.color = Sketchup::Color.new(225, 225, 225)
-    floor_mat.alpha = 1.0 if floor_mat.respond_to?(:alpha=)
-  rescue
+  # استخدم المادة المحفوظة إن وُجدت، وإلا استخدم مادة محايدة كاحتياطي فقط.
+  floor_mat = preserved_material
+  unless floor_mat && floor_mat.valid?
+    floor_mat = model.materials['MHD Floor Neutral'] || model.materials.add('MHD Floor Neutral')
+    begin
+      floor_mat.color = Sketchup::Color.new(225, 225, 225)
+      floor_mat.alpha = 1.0 if floor_mat.respond_to?(:alpha=)
+    rescue
+    end
   end
+
   floor_def.entities.grep(Sketchup::Face).each do |face|
     begin
       face.material = floor_mat
@@ -621,7 +643,6 @@ def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, 
     end
   end
 
-  # حواف الأرضية غير مرئية، مع إبقاء Geometry صالحة للتعديل.
   floor_def.entities.grep(Sketchup::Edge).each do |edge|
     begin
       edge.hidden = true if edge.respond_to?(:hidden=)
@@ -990,10 +1011,6 @@ def build_smart_wall_edit_points(room_group, wall_number, new_length_cm, anchor,
   idx = wall_number.to_i - 1
   return nil if idx < 0 || idx >= pts.length
 
-  # mode:
-  # single = عدّل الحائط المحدد فقط ولا تحرك الحائط المقابل
-  # opposite = حرّك الحائط المحدد ومعه المقابل للحفاظ على الاستقامة
-  # auto = السلوك الذكي التقليدي للغرف المستطيلة، مع fallback للـ single عند الحاجة
   mode = mode.to_s
 
   if orthogonal_quadrilateral?(pts)
@@ -1013,7 +1030,6 @@ def build_smart_wall_edit_points(room_group, wall_number, new_length_cm, anchor,
 
     result = pts.map { |p| p.clone }
 
-    # المستخدم يريد تعديل الحائط نفسه فقط: لا نحرك الحائط المقابل.
     if mode == 'single'
       case anchor.to_s
       when 'end'
@@ -1179,7 +1195,6 @@ def synchronize_room_geometry(room_group, pts, room_data)
   outward = compute_outward_pts(pts, wall_t_cm.cm)
   raise 'تعذر حساب حدود الحوائط' unless outward && outward.length == pts.length
 
-  # ترتيب التنفيذ مهم: نمسح العناصر المشتقة القديمة أولاً، ثم نبني كل شيء من pts الجديدة.
   delete_room_parts(room_group, 'حائط')
   delete_room_parts(room_group, 'أرضية')
   delete_room_parts(room_group, 'سقف')
@@ -1316,10 +1331,12 @@ def open_wall_dialog(target)
   dlg = UI::HtmlDialog.new(
     dialog_title: "#{ts('تعديل الحائط')} - MHDESIGN",
     preferences_key: PREF_KEY + '_WALL_EDIT',
-    scrollable: false,
+    scrollable: true,
     resizable: true,
-    width: 390,
-    height: 610,
+    width: 400,
+    height: 640,
+    min_width: 340,
+    min_height: 480,
     style: UI::HtmlDialog::STYLE_DIALOG
   )
 
@@ -1330,15 +1347,40 @@ def open_wall_dialog(target)
 <head>
 <meta charset="UTF-8">
 <style>
-*{box-sizing:border-box}body{margin:0;background:#07131d;color:#eaf4f8;font-family:Arial,Tahoma,sans-serif;overflow:auto}
-.app{padding:14px}.title{font-size:21px;font-weight:900;text-align:center;margin-bottom:5px}.sub{text-align:center;color:#8eabbc;font-size:12px;margin-bottom:14px}
-.card{background:#0b1b27;border:1px solid #1c3342;border-radius:12px;padding:12px;margin-bottom:10px}.row{display:grid;grid-template-columns:135px 1fr;gap:8px;align-items:center;margin-bottom:9px}.row:last-child{margin-bottom:0}
-label{font-weight:900;font-size:13px}input,select{width:100%;height:34px;background:#111f2a;color:#fff;border:1px solid #294457;border-radius:7px;padding:4px 8px;text-align:center;font-size:14px}input:focus,select:focus{outline:2px solid #39a245}
-.length-wrap{display:grid;grid-template-columns:42px 1fr 42px;gap:5px;align-items:center}.step{height:34px;border:1px solid #294457;background:#0f2433;color:#fff;border-radius:7px;font-size:17px;font-weight:900;cursor:pointer}.range{width:100%;height:26px}.big{font-size:18px;font-weight:900;text-align:center;margin:4px 0 12px;color:#fff}.hint{font-size:11px;color:#8eabbc;line-height:1.55;margin-top:7px}.footer{display:flex;gap:8px;margin-top:12px}.btn{flex:1;height:42px;border:0;border-radius:9px;font-weight:900;font-size:14px;cursor:pointer}.save{background:#4de37a;color:#061923}.cancel{background:#0b1b27;color:#fff;border:1px solid #294457}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%;width:100%;background:#07131d;color:#eaf4f8;font-family:Arial,Tahoma,sans-serif;direction:rtl;overflow:hidden}
+::-webkit-scrollbar{width:9px}
+::-webkit-scrollbar-track{background:#07131d}
+::-webkit-scrollbar-thumb{background:#1d3444;border-radius:20px;border:2px solid #07131d}
+::-webkit-scrollbar-thumb:hover{background:#2a4a5f}
+.app{height:100vh;display:flex;flex-direction:column;background:#07131d}
+.scroll{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;padding:14px 14px 6px;scroll-behavior:smooth}
+.title{font-size:21px;font-weight:900;text-align:center;margin-bottom:5px}
+.sub{text-align:center;color:#8eabbc;font-size:12px;margin-bottom:14px;line-height:1.55}
+.card{background:#0b1b27;border:1px solid #1c3342;border-radius:12px;padding:12px;margin-bottom:10px}
+.row{display:grid;grid-template-columns:135px 1fr;gap:8px;align-items:center;margin-bottom:9px}
+.row:last-child{margin-bottom:0}
+label{font-weight:900;font-size:13px;line-height:1.3;color:#d8e8ef}
+input,select{width:100%;height:36px;background:#111f2a;color:#fff;border:1px solid #294457;border-radius:7px;padding:4px 8px;text-align:center;font-size:14px;outline:none}
+input:focus,select:focus{outline:2px solid #39a245;background:#0d1b25}
+.length-wrap{display:grid;grid-template-columns:44px 1fr 44px;gap:5px;align-items:center}
+.step{height:36px;border:1px solid #294457;background:#0f2433;color:#fff;border-radius:7px;font-size:18px;font-weight:900;cursor:pointer;line-height:1}
+.step:hover{background:#153348}
+.step:active{transform:scale(0.97)}
+.range{width:100%;height:28px;margin-top:6px;accent-color:#39a245}
+.big{font-size:20px;font-weight:900;text-align:center;margin:4px 0 12px;color:#4de37a;letter-spacing:.5px}
+.hint{font-size:11px;color:#8eabbc;line-height:1.6;margin-top:7px}
+.footer{flex:0 0 auto;display:flex;gap:8px;padding:10px 14px;border-top:1px solid #1c3342;background:#07131d;box-shadow:0 -4px 12px rgba(0,0,0,.35)}
+.btn{flex:1;height:44px;border:0;border-radius:9px;font-weight:900;font-size:14px;cursor:pointer;transition:filter .15s}
+.btn:hover{filter:brightness(1.08)}
+.btn:active{transform:scale(0.98)}
+.save{background:#4de37a;color:#061923}
+.cancel{background:#0b1b27;color:#fff;border:1px solid #294457}
 </style>
 </head>
 <body>
 <div class="app">
+<div class="scroll">
 <div class="title">🧱 تعديل الحائط ##{wall_number}</div>
 <div class="sub">تعديل بارامتري للحائط مع تحديث الغرفة والعناصر المرتبطة</div>
 <div class="card">
@@ -1355,6 +1397,7 @@ label{font-weight:900;font-size:13px}input,select{width:100%;height:34px;backgro
 <div class="row"><label>اسم الحائط</label><input id="name" type="text" value="#{safe_name}"></div>
 </div>
 <div class="card"><b>⚡ تحديث ديناميكي</b><div class="hint">بعد الحفظ يتم إعادة حساب شكل الغرفة، الأرضية، السقف، والحوائط. الكمرات المرتبطة بالحائط يعاد بناؤها تلقائياً على الشكل الجديد.</div></div>
+</div>
 <div class="footer"><button class="btn save" onclick="submitData()">💾 تطبيق التعديل</button><button class="btn cancel" onclick="sketchup.cancel()">إغلاق</button></div>
 </div>
 <script>
@@ -1367,6 +1410,7 @@ function submitData(){
  if(!Number.isFinite(data.length_cm)||!Number.isFinite(data.height_cm)||!Number.isFinite(data.thickness_cm)){alert('راجع المقاسات');return;}
  sketchup.submit(JSON.stringify(data));
 }
+document.addEventListener('contextmenu', function(e){e.preventDefault();});
 updateBig();
 </script>
 </body></html>
@@ -1411,7 +1455,7 @@ end
 
 
 # =========================================================
-# MHD SHATRA ENGINE V1 - Smart wall-corner calibration
+# MHD SHATRA ENGINE V2 - Smart wall-corner calibration + Preview
 # =========================================================
 def shatras_from_room(room_group)
   json = room_group.get_attribute(DICT, 'shatras_json').to_s
@@ -1455,7 +1499,6 @@ def shatra_angle_from_sides(a_cm, b_cm, diagonal_cm)
   b = b_cm.to_f
   c = diagonal_cm.to_f
   return nil if a <= 0 || b <= 0 || c <= 0
-  # قانون جيب التمام: الزاوية المحصورة بين الضلعين a و b.
   cosv = (a*a + b*b - c*c) / (2.0*a*b)
   return nil if cosv < -1.000001 || cosv > 1.000001
   cosv = [[cosv, -1.0].max, 1.0].min
@@ -1489,7 +1532,6 @@ def shatra_adjust_corner_points(pts, corner_idx, desired_angle_deg)
   cross_z = u.cross(v).z.to_f
   sign = cross_z >= 0 ? 1.0 : -1.0
 
-  # تعديل متناظر حول الزاوية: نحافظ على طول الحائطين ونغيّر الزاوية.
   r1 = Geom::Transformation.rotation(corner, Z_AXIS, -sign * delta / 2.0)
   r2 = Geom::Transformation.rotation(corner, Z_AXIS,  sign * delta / 2.0)
   new_u = u.transform(r1)
@@ -1526,7 +1568,6 @@ def build_shatra_guide(room_group, shatra)
   va.normalize!
   vb.normalize!
 
-  # لو المسافة المطلوبة أكبر من الحائط، نوقفها عند نهاية الحائط.
   a_len = [a_len, corner.distance(p_prev)].min
   b_len = [b_len, corner.distance(p_next)].min
 
@@ -1552,12 +1593,6 @@ def build_shatra_guide(room_group, shatra)
     end
   end
 
-  # علامات صغيرة عند طرفي القياسين لإظهار نقطة القياس بوضوح.
-  tick = 1.5.cm
-  [-1, 1].each do |side|
-    # لا نستخدم ألواناً أو API غير مضمونة؛ الخطوط نفسها هي الدليل المرئي.
-  end
-
   set_attrs(grp, {
     'UUID' => (shatra['uuid'].to_s.empty? ? uuid : shatra['uuid'].to_s),
     'Room_UUID' => room_group.get_attribute(DICT, 'UUID').to_s,
@@ -1581,7 +1616,61 @@ def rebuild_all_shatras(room_group)
   true
 end
 
-def apply_shatra_calibration(room_group, corner_idx, data)
+# تخزين حالة المعاينة (لون الأرضية + النقاط + الشطرات)
+def preview_snapshot(room_group)
+  uuid_v = room_group.get_attribute(DICT, 'UUID').to_s
+  return @preview_states[uuid_v] if @preview_states && @preview_states[uuid_v]
+
+  pts = room_pts_from_group(room_group) || []
+  snapshot = {
+    'room_pts' => pts.map { |p| [p.x.to_f, p.y.to_f, p.z.to_f] },
+    'shatras' => shatras_from_room(room_group),
+    'build_data' => build_data_from_group(room_group),
+    'floor_material_name' => (capture_floor_material(room_group)&.name rescue nil)
+  }
+  @preview_states ||= {}
+  @preview_states[uuid_v] = snapshot
+  snapshot
+end
+
+def restore_preview_snapshot(room_group)
+  uuid_v = room_group.get_attribute(DICT, 'UUID').to_s
+  return false unless @preview_states && @preview_states[uuid_v]
+  snapshot = @preview_states.delete(uuid_v)
+  return false unless snapshot
+
+  model = Sketchup.active_model
+  model.start_operation('MHD Restore Preview', true)
+  begin
+    pts = snapshot['room_pts'].map { |a| Geom::Point3d.new(a[0].to_f, a[1].to_f, a[2].to_f) }
+    data = snapshot['build_data'] || {}
+    save_shatras(room_group, snapshot['shatras'] || [])
+    save_build_data(room_group, data)
+    save_room_pts(room_group, pts)
+    synchronize_room_geometry(room_group, pts, data)
+    rebuild_all_shatras(room_group) if respond_to?(:rebuild_all_shatras)
+    rebuild_all_beams(room_group) if respond_to?(:rebuild_all_beams)
+    model.commit_operation
+    model.active_view.invalidate
+    true
+  rescue => e
+    model.abort_operation rescue nil
+    false
+  end
+end
+
+def clear_preview_state(room_group)
+  uuid_v = room_group.get_attribute(DICT, 'UUID').to_s
+  @preview_states.delete(uuid_v) if @preview_states
+end
+
+def has_preview_state?(room_group)
+  uuid_v = room_group.get_attribute(DICT, 'UUID').to_s
+  @preview_states && @preview_states.key?(uuid_v)
+end
+
+# تطبيق الشطرة فعلياً (يُستخدم في المعاينة والتطبيق النهائي)
+def apply_shatra_calibration(room_group, corner_idx, data, mode = :apply)
   return false unless room_group && room_group.valid?
   a = data['a_cm'].to_f
   b = data['b_cm'].to_f
@@ -1599,6 +1688,28 @@ def apply_shatra_calibration(room_group, corner_idx, data)
     return false
   end
 
+  # نسجل النقاط الأصلية للركن لأول مرة (قبل تطبيق الشطرة) حتى يمكن استرجاعها عند الحذف
+  existing_shatra = shatra_for_corner(room_group, corner_idx)
+  target_uuid = data['uuid'].to_s
+  target_uuid = existing_shatra['uuid'].to_s if target_uuid.empty? && existing_shatra
+
+  prev_i = (corner_idx - 1) % pts.length
+  next_i = (corner_idx + 1) % pts.length
+
+  # احفظ النقاط الأصلية للركن قبل التعديل (إن لم تُحفظ من قبل)
+  original_pts_for_corner = if existing_shatra && existing_shatra['original_corner_pts'].is_a?(Array)
+    existing_shatra['original_corner_pts']
+  else
+    [
+      [pts[prev_i].x.to_f, pts[prev_i].y.to_f, pts[prev_i].z.to_f],
+      [pts[corner_idx].x.to_f, pts[corner_idx].y.to_f, pts[corner_idx].z.to_f],
+      [pts[next_i].x.to_f, pts[next_i].y.to_f, pts[next_i].z.to_f]
+    ]
+  end
+
+  # في وضع المعاينة: نحفظ snapshot للحالة قبل التعديل (مرة واحدة فقط)
+  preview_snapshot(room_group) if mode == :preview && !has_preview_state?(room_group)
+
   new_pts = shatra_adjust_corner_points(pts, corner_idx, angle)
   unless new_pts && polygon_valid_for_wall_edit?(new_pts)
     UI.messagebox('❌ التعديل سيؤدي إلى شكل غرفة غير صالح.')
@@ -1609,15 +1720,14 @@ def apply_shatra_calibration(room_group, corner_idx, data)
   room_data = build_data_from_group(room_group) || {}
   room_data = room_data.dup
   old_pts = pts.map(&:clone)
-  model.start_operation('MHD Smart Shatra Calibration', true)
+
+  op_name = (mode == :preview) ? 'MHD Shatra Preview' : 'MHD Smart Shatra Calibration'
+  model.start_operation(op_name, true)
   begin
     remove_legacy_source_floor_geometry(old_pts)
-    # نبني كل Geometry مرة واحدة من النقاط الجديدة ثم نعيد رسم مرجع الشطرة.
     rebuild_room_after_wall_edit(room_group, new_pts, room_data)
 
     shatras = shatras_from_room(room_group)
-    target_uuid = data['uuid'].to_s
-    previous = shatras.find { |s| !target_uuid.empty? && s['uuid'].to_s == target_uuid }
     shatras.reject! { |s| s['corner_index'].to_i == corner_idx.to_i || (!target_uuid.empty? && s['uuid'].to_s == target_uuid) }
     shatras << {
       'uuid' => (target_uuid.empty? ? uuid : target_uuid),
@@ -1625,14 +1735,18 @@ def apply_shatra_calibration(room_group, corner_idx, data)
       'a_cm' => a,
       'b_cm' => b,
       'diagonal_cm' => diag,
-      'angle_deg' => angle
+      'angle_deg' => angle,
+      'original_corner_pts' => original_pts_for_corner
     }
     save_shatras(room_group, shatras)
     rebuild_all_shatras(room_group)
 
     model.commit_operation
     model.active_view.invalidate
-    UI.messagebox("✅ تم ضبط الشطرة بنجاح\n\n#{shatra_result_text(a, b, diag, angle)}")
+
+    if mode == :apply
+      UI.messagebox("✅ تم ضبط الشطرة بنجاح\n\n#{shatra_result_text(a, b, diag, angle)}")
+    end
     true
   rescue => e
     model.abort_operation rescue nil
@@ -1645,20 +1759,51 @@ def shatra_for_corner(room_group, corner_idx)
   shatras_from_room(room_group).find { |s| s['corner_index'].to_i == corner_idx.to_i }
 end
 
+# حذف الشطرة مع إرجاع الركن لحالته الأصلية تماماً
 def delete_shatra(room_group, shatra_uuid)
   return false unless room_group && room_group.valid?
   uuid_to_delete = shatra_uuid.to_s
   shatras = shatras_from_room(room_group)
-  remaining = shatras.reject { |s| s['uuid'].to_s == uuid_to_delete }
-  return false if remaining.length == shatras.length
+  target = shatras.find { |s| s['uuid'].to_s == uuid_to_delete }
+  return false unless target
+
+  corner_idx = target['corner_index'].to_i
+  original_pts = target['original_corner_pts']
+
   model = Sketchup.active_model
   model.start_operation('MHD Delete Shatra', true)
   begin
+    pts = room_pts_from_group(room_group)
+    unless pts && pts.length >= 3
+      model.abort_operation rescue nil
+      UI.messagebox('❌ لا يمكن قراءة نقاط الغرفة.')
+      return false
+    end
+
+    # إعادة الركن لحالته الأصلية إن كانت محفوظة
+    if original_pts.is_a?(Array) && original_pts.length == 3
+      n = pts.length
+      prev_i = (corner_idx - 1) % n
+      next_i = (corner_idx + 1) % n
+      pts[prev_i] = Geom::Point3d.new(original_pts[0][0].to_f, original_pts[0][1].to_f, original_pts[0][2].to_f)
+      pts[corner_idx] = Geom::Point3d.new(original_pts[1][0].to_f, original_pts[1][1].to_f, original_pts[1][2].to_f)
+      pts[next_i] = Geom::Point3d.new(original_pts[2][0].to_f, original_pts[2][1].to_f, original_pts[2][2].to_f)
+
+      # إعادة بناء الغرفة بنقاط الركن الأصلية
+      room_data = build_data_from_group(room_group) || {}
+      old_pts = room_pts_from_group(room_group).map(&:clone)
+      remove_legacy_source_floor_geometry(old_pts)
+      synchronize_room_geometry(room_group, pts, room_data)
+    end
+
+    # إزالة الشطرة من القائمة
+    remaining = shatras.reject { |s| s['uuid'].to_s == uuid_to_delete }
     save_shatras(room_group, remaining)
     rebuild_all_shatras(room_group)
+
     model.commit_operation
     model.active_view.invalidate
-    UI.messagebox('✅ تم حذف الشطرة بنجاح')
+    UI.messagebox('✅ تم حذف الشطرة وإرجاع الحائط لحالته الأصلية')
     true
   rescue => e
     model.abort_operation rescue nil
@@ -1680,8 +1825,10 @@ def open_shatra_dialog(room_group, corner_idx, existing = nil)
     preferences_key: PREF_KEY + '_SHATRA',
     scrollable: true,
     resizable: true,
-    width: 450,
-    height: 700,
+    width: 470,
+    height: 720,
+    min_width: 380,
+    min_height: 520,
     style: UI::HtmlDialog::STYLE_DIALOG
   )
 
@@ -1691,26 +1838,52 @@ def open_shatra_dialog(room_group, corner_idx, existing = nil)
   uuid0 = existing ? existing['uuid'].to_s : ''
   safe_info = (existing_info || "لا توجد شطرة محفوظة على هذا الركن.\nالزاوية الهندسية الحالية للركن: #{current_angle.round(2)}°").gsub('&','&amp;').gsub('<','&lt;').gsub('>','&gt;').gsub("\n", '<br>')
 
+  has_existing = existing ? 'true' : 'false'
+
   html = <<-HTML
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
 <style>
-*{box-sizing:border-box}html,body{margin:0;padding:0;background:#07131d;color:#eaf4f8;font-family:Arial,Tahoma,sans-serif;overflow:auto}
-.app{padding:16px;min-height:100vh}.title{text-align:center;font-size:24px;font-weight:900}.sub{text-align:center;color:#8eabbc;font-size:12px;margin:5px 0 14px}
-.card{background:#0b1b27;border:1px solid #1c3342;border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:0 4px 18px rgba(0,0,0,.18)}
-.row{display:grid;grid-template-columns:180px 1fr;gap:9px;align-items:center;margin-bottom:10px}label{font-weight:900;font-size:13px}
-input{width:100%;height:40px;background:#111f2a;color:#fff;border:1px solid #294457;border-radius:9px;text-align:center;font-size:15px;padding:0 8px}
-.result{background:#102b3b;border:1px solid #26495d;border-radius:11px;padding:13px;text-align:center;font-size:25px;font-weight:900}.state{font-size:14px;margin-top:8px;line-height:1.8}
-.info{font-size:12px;color:#b4cbd7;line-height:1.8;background:#091923;border-radius:10px;padding:10px}.hint{font-size:11px;color:#8eabbc;line-height:1.7}
-.footer{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}.footer3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px}
-button{height:44px;border:0;border-radius:9px;font-weight:900;font-size:13px;cursor:pointer}.save{background:#4de37a;color:#061923}.close{background:#0b1b27;color:#fff;border:1px solid #294457}.danger{background:#d9534f;color:#fff}.secondary{background:#123044;color:#fff;border:1px solid #294457}
-.badge{display:inline-block;background:#17384a;color:#cfe9f6;padding:4px 10px;border-radius:999px;font-size:11px;margin-top:6px}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%;width:100%;background:#07131d;color:#eaf4f8;font-family:Arial,Tahoma,sans-serif;overflow:hidden}
+::-webkit-scrollbar{width:9px}
+::-webkit-scrollbar-track{background:#07131d}
+::-webkit-scrollbar-thumb{background:#1d3444;border-radius:20px;border:2px solid #07131d}
+::-webkit-scrollbar-thumb:hover{background:#2a4a5f}
+.app{height:100vh;display:flex;flex-direction:column;background:#07131d}
+.scroll{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;padding:14px 14px 6px;scroll-behavior:smooth}
+.title{text-align:center;font-size:22px;font-weight:900;margin-bottom:4px}
+.sub{text-align:center;color:#8eabbc;font-size:12px;margin:4px 0 12px;line-height:1.55}
+.card{background:#0b1b27;border:1px solid #1c3342;border-radius:12px;padding:12px;margin-bottom:10px}
+.row{display:grid;grid-template-columns:180px 1fr;gap:9px;align-items:center;margin-bottom:10px}
+.row:last-child{margin-bottom:0}
+label{font-weight:900;font-size:13px;color:#d8e8ef}
+input{width:100%;height:40px;background:#111f2a;color:#fff;border:1px solid #294457;border-radius:8px;text-align:center;font-size:15px;padding:0 8px;outline:none}
+input:focus{outline:2px solid #39a245;background:#0d1b25}
+.result{background:#102b3b;border:1px solid #26495d;border-radius:11px;padding:13px;text-align:center;font-size:24px;font-weight:900;color:#4de37a}
+.state{font-size:13px;margin-top:8px;line-height:1.9;color:#d8e8ef}
+.info{font-size:12px;color:#b4cbd7;line-height:1.8;background:#091923;border-radius:10px;padding:10px;white-space:pre-line}
+.hint{font-size:11px;color:#8eabbc;line-height:1.65}
+.badge{display:inline-block;background:#17384a;color:#cfe9f6;padding:4px 10px;border-radius:999px;font-size:11px;margin-bottom:6px}
+.footer{flex:0 0 auto;display:grid;grid-template-columns:1.5fr 1fr;gap:8px;padding:10px 14px;border-top:1px solid #1c3342;background:#07131d;box-shadow:0 -4px 12px rgba(0,0,0,.35)}
+.footer2{flex:0 0 auto;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:0 14px 12px;background:#07131d}
+button{border:0;border-radius:9px;font-weight:900;font-size:13px;cursor:pointer;transition:filter .15s,transform .05s}
+button:hover{filter:brightness(1.08)}
+button:active{transform:scale(0.98)}
+.btnMain{height:44px;font-size:14px}
+.save{background:#4de37a;color:#061923}
+.preview{background:#2c6b8a;color:#fff}
+.cancel{background:#0b1b27;color:#fff;border:1px solid #294457}
+.danger{background:#c0392b;color:#fff;height:40px}
+.secondary{background:#123044;color:#fff;border:1px solid #294457;height:40px}
+.preview-active .preview{background:#e0a020;color:#061923}
 </style>
 </head>
 <body>
-<div class="app">
+<div class="app" id="app">
+<div class="scroll">
   <div class="title">📐 شطرة الحائط</div>
   <div class="sub">شطرة ذكية مرتبطة مباشرة بالركن والحائط والغرفة</div>
 
@@ -1732,19 +1905,23 @@ button{height:44px;border:0;border-radius:9px;font-weight:900;font-size:13px;cur
   </div>
 
   <div class="card">
-    <div class="hint">اكتب المقاسين والقطر، وسيتم حساب الزاوية تلقائياً. بعد التطبيق يتم إعادة بناء الحوائط والأرضية والسقف والكمرات والشطرات المرتبطة من نفس Room Geometry، بدون ترك Geometry قديمة.</div>
-  </div>
-
-  <div class="footer">
-    <button class="save" onclick="applyIt()">📐 تطبيق الشطرة</button>
-    <button class="close" onclick="sketchup.cancel()">إغلاق</button>
-  </div>
-  <div class="footer3">
-    <button class="secondary" onclick="refreshInfo()">🔄 تحديث المعلومات</button>
-    #{existing ? '<button class="danger" onclick="deleteIt()">🗑 حذف الشطرة</button><button class="secondary" onclick="sketchup.cancel()">✏️ إغلاق وحفظ لاحقاً</button>' : '<button class="secondary" onclick="sketchup.cancel()">✖ إلغاء</button><button class="secondary" onclick="sketchup.cancel()">ℹ️ معاينة فقط</button>'}
+    <div class="hint">💡 <b>معاينة</b>: تُطبّق الشطرة مؤقتاً على المجسم لتشوف الشكل النهائي قبل الحفظ. لو أغلق النافذة أو ضغط <b>إلغاء المعاينة</b>، الحائط يرجع لحالته الأصلية. عند <b>تطبيق الشطرة</b> يتم الحفظ النهائي.</div>
   </div>
 </div>
+
+<div class="footer">
+  <button class="btnMain preview" id="previewBtn" onclick="previewIt()">👁 معاينة الشطرة</button>
+  <button class="btnMain cancel" onclick="closeDialog()">إغلاق</button>
+</div>
+<div class="footer2">
+  <button class="btnMain save" onclick="applyIt()">📐 تطبيق الشطرة</button>
+  #{existing ? '<button class="danger" onclick="deleteIt()">🗑 حذف الشطرة</button>' : '<button class="secondary" onclick="closeDialog()">✖ إلغاء</button>'}
+  <button class="secondary" onclick="cancelPreview()">↩ إلغاء المعاينة</button>
+</div>
+</div>
 <script>
+let previewActive = #{has_existing};
+
 function fmt(v){return Number(v).toFixed(2)}
 function calc(){
  const a=parseFloat(document.getElementById('a').value),b=parseFloat(document.getElementById('b').value),c=parseFloat(document.getElementById('c').value);
@@ -1763,9 +1940,34 @@ function calc(){
  return {a_cm:a,b_cm:b,diagonal_cm:c};
 }
 ['a','b','c'].forEach(id=>document.getElementById(id).addEventListener('input',calc));
-function applyIt(){const d=calc();if(!d){alert('راجع المقاسات والقطر');return}sketchup.submit(JSON.stringify(d));}
-function refreshInfo(){calc();}
-function deleteIt(){sketchup.delete_shatra('#{uuid0}');}
+
+function previewIt(){
+ const d=calc();
+ if(!d){alert('راجع المقاسات والقطر');return;}
+ document.getElementById('previewBtn').textContent='⏳ جاري المعاينة...';
+ document.getElementById('previewBtn').disabled = true;
+ sketchup.preview(JSON.stringify(d));
+ setTimeout(()=>{
+   document.getElementById('previewBtn').textContent='🔄 تحديث المعاينة';
+   document.getElementById('previewBtn').disabled = false;
+   previewActive = true;
+ },400);
+}
+
+function applyIt(){
+ const d=calc();
+ if(!d){alert('راجع المقاسات والقطر');return;}
+ sketchup.submit(JSON.stringify(d));
+}
+
+function cancelPreview(){ sketchup.cancel_preview(); }
+
+function deleteIt(){ sketchup.delete_shatra('#{uuid0}'); }
+
+function closeDialog(){
+ if(previewActive){ sketchup.cancel_preview_and_close(); }
+ else { sketchup.cancel(); }
+}
 calc();
 </script>
 </body></html>
@@ -1773,20 +1975,62 @@ calc();
 
   dlg.set_html(html)
   dlg.add_action_callback('cancel') { dlg.close }
-  dlg.add_action_callback('submit') do |_, json|
+
+  dlg.add_action_callback('preview') do |_, json|
     begin
       data = JSON.parse(json)
-      dlg.close
       data['uuid'] = uuid0 unless uuid0.to_s.empty?
-      apply_shatra_calibration(room_group, corner_idx, data)
+      apply_shatra_calibration(room_group, corner_idx, data, :preview)
     rescue => e
       UI.messagebox("❌ #{e.message}")
     end
   end
-  dlg.add_action_callback('delete_shatra') do |_, uid|
-    dlg.close
-    delete_shatra(room_group, uid)
+
+  dlg.add_action_callback('cancel_preview') do
+    begin
+      if has_preview_state?(room_group)
+        restore_preview_snapshot(room_group)
+        UI.messagebox('↩ تم إلغاء المعاينة وإرجاع الحائط لحالته الأصلية')
+      end
+    rescue => e
+      UI.messagebox("❌ #{e.message}")
+    end
   end
+
+  dlg.add_action_callback('cancel_preview_and_close') do
+    begin
+      if has_preview_state?(room_group)
+        restore_preview_snapshot(room_group)
+      end
+    rescue => e
+      UI.messagebox("❌ #{e.message}")
+    end
+    dlg.close
+  end
+
+  dlg.add_action_callback('submit') do |_, json|
+    begin
+      data = JSON.parse(json)
+      data['uuid'] = uuid0 unless uuid0.to_s.empty?
+      # لو فيه معاينة سابقة، نلغي snapshot عشان نحفظ التعديل الحالي كنهائي
+      clear_preview_state(room_group)
+      dlg.close
+      apply_shatra_calibration(room_group, corner_idx, data, :apply)
+    rescue => e
+      UI.messagebox("❌ #{e.message}")
+    end
+  end
+
+  dlg.add_action_callback('delete_shatra') do |_, uid|
+    begin
+      clear_preview_state(room_group)
+      dlg.close
+      delete_shatra(room_group, uid)
+    rescue => e
+      UI.messagebox("❌ #{e.message}")
+    end
+  end
+
   dlg.show
 end
 
@@ -1800,7 +2044,6 @@ class ShatraPickTool
     ph.do_pick(x, y)
     ent = ph.best_picked
 
-    # 1) لو ضغط المستخدم على شطرة موجودة: افتح بياناتها مباشرة.
     if ent && ent.respond_to?(:get_attribute)
       kind = ent.get_attribute(MHD_RoomBuilder_Context::DICT, 'النوع').to_s
       if kind == 'شطرة حائط'
@@ -1814,7 +2057,6 @@ class ShatraPickTool
       end
     end
 
-    # 2) أو اضغط على حائط/عنصر داخل غرفة.
     room = MHD_RoomBuilder_Context.find_room_group(ent)
     unless room
       UI.messagebox(MHD_RoomBuilder_Context.ts('اضغط على حائط أو شطرة داخل غرفة MHD.'))
@@ -2574,11 +2816,10 @@ nil
 end
 
 # -------------------------
-# Build Ceiling (unchanged)
+# Build Ceiling
 # -------------------------
 def build_ceiling(model, room_ents, room_name, room_uuid, outer_pts, room_pts,
 wall_h, ceil_t, ceil_t_cm, data)
-# ... [الكود الأصلي كما هو] ...
 pattern = data['ceiling_pattern'].to_s
 pattern = 'flat' unless %w[flat perimeter center center_hidden_led double_hidden_led strips hidden_cove].include?(pattern)
 common = {
@@ -2965,8 +3206,6 @@ room_group = model.active_entities.add_group
 room_group.name = room_name
 room_group.layer = tag(model, room_name)
 
-
-# ✅ جديد: حفظ محيط الغرفة والبيانات الكاملة للتعديل الذكي
 save_room_pts(room_group, pts)
 save_build_data(room_group, data)
 
@@ -3058,13 +3297,11 @@ model = Sketchup.active_model
 selection = model.selection.to_a
 
 
-  # بناء غرفة جديدة من Face محدد
   if selected_face
     menu.add_separator
     menu.add_item(ts(MENU_BUILD)) { build }
   end
 
-  # تعديل غرفة موجودة
   room_group = nil
   selection.each do |entity|
     room_group = find_room_group(entity)
@@ -3075,7 +3312,6 @@ selection = model.selection.to_a
     menu.add_separator
     menu.add_item(ts('⚙️ تعديل الغرفة')) { open_edit_room_dialog(room_group) }
 
-    # كمر: يظهر عند تحديد حائط أو كمر
     wall_entity = selection.find do |entity|
       entity.respond_to?(:get_attribute) &&
         entity.get_attribute(DICT, 'النوع').to_s == 'حائط'
@@ -3095,7 +3331,6 @@ selection = model.selection.to_a
   end
 end
 
-# قائمة Plugins للأداة التفاعلية
 UI.menu('Plugins').add_item(ts('MHD - تعديل غرفة (نقر تفاعلي)')) do
   activate_room_edit_picker
 end
