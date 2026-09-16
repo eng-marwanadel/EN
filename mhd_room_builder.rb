@@ -3380,3 +3380,421 @@ file_loaded(__FILE__)
 
 end
 end
+
+
+# =========================================================
+# MHD SAFE ARCHITECTURAL INTEGRATION PATCH v4.1
+# ---------------------------------------------------------
+# الهدف:
+# 1) شطرة الحائط = قياس/مرجع فقط، ولا تعيد بناء الغرفة أثناء Preview.
+# 2) فتحات الأبواب والشبابيك محفوظة لكل حائط ولا تضيع عند إعادة البناء.
+# 3) UUID الحائط يظل ثابتاً قدر الإمكان عند إعادة بناء نفس رقم الحائط.
+# 4) إعادة بناء الحائط لا تمسح بيانات الفتحات.
+# 5) منع Preview من حذف/إعادة إنشاء الأرضية، وبالتالي تقليل
+#    تغيّر الـ shading/flicker الناتج عن إعادة بناء الهندسة.
+# =========================================================
+
+module MHD_RoomBuilder_SafeIntegration_V41
+  extend self
+
+  DICT = 'MHD_ROOM_BUILDER'
+  OPENINGS_KEY = 'OPENINGS_JSON'
+  PREVIEW_TAG = 'MHD | Shatra Preview'
+
+  def safe_uuid
+    if defined?(SecureRandom)
+      SecureRandom.uuid
+    else
+      "#{Time.now.to_i}-#{rand(999999)}"
+    end
+  end
+
+  def opening_engine_available?
+    defined?(MHD_Opening_Engine_V26_LIVE_WALL_SELECTION) &&
+      MHD_Opening_Engine_V26_LIVE_WALL_SELECTION.respond_to?(:read_openings) &&
+      MHD_Opening_Engine_V26_LIVE_WALL_SELECTION.respond_to?(:rebuild_wall)
+  rescue
+    false
+  end
+
+  def wall_components(room_group)
+    room_group.entities.to_a.select do |e|
+      e.valid? &&
+        e.is_a?(Sketchup::ComponentInstance) &&
+        e.get_attribute(DICT, 'النوع').to_s == 'حائط'
+    end
+  end
+
+  def capture_wall_state(room_group)
+    result = {}
+
+    wall_components(room_group).each do |wall|
+      number = wall.get_attribute(DICT, 'رقم الحائط').to_i
+      next if number <= 0
+
+      openings = if wall.get_attribute(DICT, OPENINGS_KEY)
+        raw = wall.get_attribute(DICT, OPENINGS_KEY).to_s
+        begin
+          parsed = JSON.parse(raw)
+          parsed.is_a?(Array) ? parsed : []
+        rescue
+          []
+        end
+      else
+        []
+      end
+
+      length_cm = wall.get_attribute(DICT, 'طول الحائط سم').to_f
+
+      result[number] = {
+        'wall_uuid' => wall.get_attribute(DICT, 'UUID').to_s,
+        'openings' => openings,
+        'old_length_cm' => length_cm
+      }
+    end
+
+    result
+  rescue
+    {}
+  end
+
+  def normalize_openings_for_new_length(openings, old_length_cm, new_length_cm)
+    return [] unless openings.is_a?(Array)
+
+    old_len = old_length_cm.to_f
+    new_len = new_length_cm.to_f
+    return openings.map(&:dup) if old_len <= 0.001 || new_len <= 0.001
+
+    openings.map do |raw|
+      op = raw.is_a?(Hash) ? raw.dup : {}
+      width = op['width_cm'].to_f
+      next nil if width <= 0.0 || width >= new_len
+
+      old_offset = op['offset_cm'].to_f
+      ratio = old_len > 0.001 ? (old_offset / old_len) : 0.0
+
+      # نحافظ على موضع الفتحة كنسبة من طول الحائط،
+      # ثم نضمن أنها لا تخرج خارج الحائط الجديد.
+      new_offset = ratio * new_len
+      max_offset = [new_len - width, 0.0].max
+      new_offset = [[new_offset, 0.0].max, max_offset].min
+
+      op['offset_cm'] = new_offset.round(4)
+
+      # جلسة/ارتفاع الشباك تظل كما هي؛ نعيد فقط الموضع الأفقي.
+      op
+    end.compact
+  rescue
+    []
+  end
+
+  def restore_wall_state(room_group, state)
+    return false unless state.is_a?(Hash)
+
+    walls = wall_components(room_group)
+
+    walls.each do |wall|
+      number = wall.get_attribute(DICT, 'رقم الحائط').to_i
+      saved = state[number]
+      next unless saved
+
+      old_uuid = saved['wall_uuid'].to_s
+      wall.set_attribute(DICT, 'UUID', old_uuid.empty? ? safe_uuid : old_uuid)
+
+      new_length = wall.get_attribute(DICT, 'طول الحائط سم').to_f
+      openings = normalize_openings_for_new_length(
+        saved['openings'],
+        saved['old_length_cm'],
+        new_length
+      )
+
+      wall.set_attribute(DICT, OPENINGS_KEY, JSON.generate(openings))
+
+      # لو محرك الفتحات محمّل، نعيد بناء الـ Shell بالفتحات فوراً.
+      if opening_engine_available? && !openings.empty?
+        begin
+          MHD_Opening_Engine_V26_LIVE_WALL_SELECTION.rebuild_wall(wall)
+        rescue => e
+          # لا نكسر إعادة بناء الغرفة كلها بسبب محرك الفتحات.
+          wall.set_attribute(DICT, 'Opening_Integration_Error', e.message.to_s)
+        end
+      end
+    end
+
+    true
+  rescue
+    false
+  end
+
+  # ---------------------------------------------------------
+  # Preview Geometry
+  # ---------------------------------------------------------
+
+  def delete_preview_geometry(room_group)
+    room_group.entities.to_a.each do |e|
+      next unless e.valid?
+      next unless e.is_a?(Sketchup::Group)
+      next unless e.get_attribute(DICT, 'النوع').to_s == 'شطرة Preview'
+      e.erase!
+    end
+  rescue
+    nil
+  end
+
+  def build_preview_geometry(room_group, original_pts, preview_pts, corner_idx)
+    return false unless original_pts && preview_pts
+    return false unless original_pts.length == preview_pts.length
+
+    delete_preview_geometry(room_group)
+
+    grp = room_group.entities.add_group
+    grp.name = 'MHD | Shatra Preview'
+    grp.layer = tag(Sketchup.active_model, PREVIEW_TAG)
+
+    # الخطوط المرجعية القديمة والجديدة فقط.
+    # لا يتم إنشاء حائط أو أرضية أو سقف جديد.
+    original_prev = original_pts[(corner_idx - 1) % original_pts.length]
+    original_corner = original_pts[corner_idx]
+    original_next = original_pts[(corner_idx + 1) % original_pts.length]
+
+    preview_prev = preview_pts[(corner_idx - 1) % preview_pts.length]
+    preview_corner = preview_pts[corner_idx]
+    preview_next = preview_pts[(corner_idx + 1) % preview_pts.length]
+
+    z = [
+      original_prev.z, original_corner.z, original_next.z,
+      preview_prev.z, preview_corner.z, preview_next.z
+    ].max + 1.5.cm
+
+    op = grp.entities.add_line(
+      Geom::Point3d.new(original_corner.x, original_corner.y, z),
+      Geom::Point3d.new(original_prev.x, original_prev.y, z)
+    )
+
+    on = grp.entities.add_line(
+      Geom::Point3d.new(original_corner.x, original_corner.y, z),
+      Geom::Point3d.new(original_next.x, original_next.y, z)
+    )
+
+    np = grp.entities.add_line(
+      Geom::Point3d.new(preview_corner.x, preview_corner.y, z + 0.2.mm),
+      Geom::Point3d.new(preview_prev.x, preview_prev.y, z + 0.2.mm)
+    )
+
+    nn = grp.entities.add_line(
+      Geom::Point3d.new(preview_corner.x, preview_corner.y, z + 0.2.mm),
+      Geom::Point3d.new(preview_next.x, preview_next.y, z + 0.2.mm)
+    )
+
+    [op, on, np, nn].compact.each do |edge|
+      begin
+        edge.hidden = false
+        edge.soft = false
+        edge.smooth = false
+      rescue
+      end
+    end
+
+    set_attrs(grp, {
+      'UUID' => safe_uuid,
+      'Room_UUID' => room_group.get_attribute(DICT, 'UUID').to_s,
+      'النوع' => 'شطرة Preview',
+      'corner_index' => corner_idx.to_i
+    })
+
+    true
+  rescue
+    false
+  end
+
+  def clear_preview(room_group)
+    delete_preview_geometry(room_group)
+    true
+  rescue
+    false
+  end
+
+  # ---------------------------------------------------------
+  # Hook: rebuild_room_walls
+  # ---------------------------------------------------------
+
+  def rebuild_room_walls(room_group, pts, outward_pts, wall_h, wall_t,
+                         wall_h_cm, wall_t_cm, room_name, room_uuid)
+    state = capture_wall_state(room_group)
+
+    result = super(
+      room_group, pts, outward_pts, wall_h, wall_t,
+      wall_h_cm, wall_t_cm, room_name, room_uuid
+    )
+
+    restore_wall_state(room_group, state)
+    result
+  rescue => e
+    raise e
+  end
+
+  # ---------------------------------------------------------
+  # Hook: synchronize_room_geometry
+  # ---------------------------------------------------------
+
+  def synchronize_room_geometry(room_group, pts, room_data)
+    # مهم: فتحات الحائط يتم حفظها داخل rebuild_room_walls
+    # قبل حذف الحوائط القديمة.
+    super(room_group, pts, room_data)
+  end
+
+  # ---------------------------------------------------------
+  # Shatra = reference/measurement only
+  # ---------------------------------------------------------
+
+  def apply_shatra_calibration(room_group, corner_idx, data, mode = :apply)
+    return false unless room_group && room_group.valid?
+
+    a = data['a_cm'].to_f
+    b = data['b_cm'].to_f
+    diag = data['diagonal_cm'].to_f
+    angle = shatra_angle_from_sides(a, b, diag)
+
+    unless angle
+      UI.messagebox(
+        "❌ مقاسات الشطرة غير هندسية.\n" \
+        "لازم القطر يكون أكبر من |#{a} - #{b}| وأصغر من #{a + b}."
+      )
+      return false
+    end
+
+    pts = room_pts_from_group(room_group)
+    unless pts && pts.length >= 3
+      UI.messagebox('❌ لا يمكن قراءة نقاط الغرفة.')
+      return false
+    end
+
+    existing = shatra_for_corner(room_group, corner_idx)
+    target_uuid = data['uuid'].to_s
+    target_uuid = existing['uuid'].to_s if target_uuid.empty? && existing
+
+    prev_i = (corner_idx - 1) % pts.length
+    next_i = (corner_idx + 1) % pts.length
+
+    original_corner_pts =
+      if existing && existing['original_corner_pts'].is_a?(Array)
+        existing['original_corner_pts']
+      else
+        [
+          [pts[prev_i].x.to_f, pts[prev_i].y.to_f, pts[prev_i].z.to_f],
+          [pts[corner_idx].x.to_f, pts[corner_idx].y.to_f, pts[corner_idx].z.to_f],
+          [pts[next_i].x.to_f, pts[next_i].y.to_f, pts[next_i].z.to_f]
+        ]
+      end
+
+    # حساب الشكل المتوقع فقط — لا يتم تطبيقه على الغرفة.
+    preview_pts = shatra_adjust_corner_points(pts, corner_idx, angle)
+    unless preview_pts && polygon_valid_for_wall_edit?(preview_pts)
+      UI.messagebox('❌ القياسات ستنتج شكلاً هندسياً غير صالح.')
+      return false
+    end
+
+    shatras = shatras_from_room(room_group)
+    shatras.reject! do |s|
+      s['corner_index'].to_i == corner_idx.to_i ||
+        (!target_uuid.empty? && s['uuid'].to_s == target_uuid)
+    end
+
+    shatras << {
+      'uuid' => (target_uuid.empty? ? safe_uuid : target_uuid),
+      'corner_index' => corner_idx.to_i,
+      'a_cm' => a,
+      'b_cm' => b,
+      'diagonal_cm' => diag,
+      'angle_deg' => angle,
+      'original_corner_pts' => original_corner_pts,
+      'reference_only' => true
+    }
+
+    save_shatras(room_group, shatras)
+
+    # Preview: خطوط مرجعية فقط.
+    if mode == :preview
+      build_preview_geometry(room_group, pts, preview_pts, corner_idx)
+      Sketchup.active_model.active_view.invalidate
+      return true
+    end
+
+    # Apply: نحفظ نتيجة القياس ونرسم الـ guide فقط.
+    # لا synchronize_room_geometry هنا، ولا حذف حوائط/أرضية/سقف.
+    delete_preview_geometry(room_group)
+    rebuild_all_shatras(room_group)
+    Sketchup.active_model.active_view.invalidate
+
+    UI.messagebox(
+      "✅ تم حفظ معايرة الشطرة كمرجع هندسي فقط.\n\n" \
+      "#{shatra_result_text(a, b, diag, angle)}\n\n" \
+      "⚠️ الشطرة لا تغيّر الحوائط أو الفتحات أو الأرضية."
+    )
+
+    true
+  rescue => e
+    UI.messagebox("❌ خطأ أثناء حفظ الشطرة:\n#{e.message}")
+    false
+  end
+
+  # ---------------------------------------------------------
+  # Delete Shatra: remove reference only
+  # ---------------------------------------------------------
+
+  def delete_shatra(room_group, shatra_uuid)
+    return false unless room_group && room_group.valid?
+
+    uuid_to_delete = shatra_uuid.to_s
+    shatras = shatras_from_room(room_group)
+    target = shatras.find { |s| s['uuid'].to_s == uuid_to_delete }
+    return false unless target
+
+    remaining = shatras.reject { |s| s['uuid'].to_s == uuid_to_delete }
+    save_shatras(room_group, remaining)
+
+    delete_preview_geometry(room_group)
+    rebuild_all_shatras(room_group)
+
+    Sketchup.active_model.active_view.invalidate
+    true
+  rescue => e
+    UI.messagebox("❌ خطأ أثناء حذف الشطرة:\n#{e.message}")
+    false
+  end
+
+  # ---------------------------------------------------------
+  # Preview snapshot hooks: no destructive restore
+  # ---------------------------------------------------------
+
+  def preview_snapshot(room_group)
+    uuid_v = room_group.get_attribute(DICT, 'UUID').to_s
+    @preview_states ||= {}
+    @preview_states[uuid_v] ||= {
+      'room_pts' => (room_pts_from_group(room_group) || []).map { |p| [p.x.to_f, p.y.to_f, p.z.to_f] },
+      'shatras' => shatras_from_room(room_group),
+      'build_data' => build_data_from_group(room_group)
+    }
+  end
+
+  def restore_preview_snapshot(room_group)
+    clear_preview(room_group)
+    clear_preview_state(room_group) if respond_to?(:clear_preview_state)
+    Sketchup.active_model.active_view.invalidate
+    true
+  rescue
+    false
+  end
+
+  def clear_preview_state(room_group)
+    uuid_v = room_group.get_attribute(DICT, 'UUID').to_s
+    @preview_states.delete(uuid_v) if @preview_states
+    delete_preview_geometry(room_group)
+    true
+  end
+end
+
+# Install the patch BEFORE the original singleton methods.
+# This preserves the original engine and gives the safety layer priority.
+MHD_RoomBuilder_Context.singleton_class.prepend(MHD_RoomBuilder_SafeIntegration_V41)
+
