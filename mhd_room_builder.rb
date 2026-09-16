@@ -21,7 +21,7 @@ extend self
 MENU_BUILD = 'بناء الحوائط'
 DICT = 'MHD_ROOM_BUILDER'
 PREF_KEY = 'MHD_ROOM_BUILDER_UI'
-LOGO_URL = 'https://mhdesign-eg.com/SKETCHUP/components/logo3.png'
+LOGO_URL = 'https://i.ibb.co/LXLdnbMw/Gemini-Generated-Image-sm7mc3sm7mc3sm7m-removebg-preview.png'
 
 # حالة المعاينة المؤقتة (لكل غرفة)
 @preview_states = {}
