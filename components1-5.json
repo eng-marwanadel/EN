@@ -7,7 +7,7 @@
     "desc": "جنب ثلاجة",
     "category": "اضافات",
     "name_id": "UNIT_C4_055_NAME",
-    "desc_id": "UNIT_C4_055_DESC",
-    "category_id": "CAT_CLASSIC_DOORS"
+    "desc_id": "UNIT_C4_055_DERR",
+    "category_id": "CAT_NEW"
   }
 ]
