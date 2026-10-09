@@ -1,17 +1,18 @@
 # encoding: UTF-8
 # ═══════════════════════════════════════════════════════════════════════════════
-# 🏗️ MHD Room Builder v4.5 — Full Edition with Beam Add FIX
+# 🏗️ MHD Room Builder v4.6 — Dynamic Beams Edition
 # © م. مروان عادل — 📞 01204279606
 # SketchUp 2024+ | Ruby 3.x
 # ═══════════════════════════════════════════════════════════════════════════════
 #
-# 🔧 الإصلاحات في v4.5:
-#   ✅ FIXED: rebuild_all_beams ما بيندش sync (كان بيمسح الكمر الجديد)
-#   ✅ FIXED: sync بيشتغل بس عند فتح الدايلوج
-#   ✅ FIXED: الكمر "يتبع السقف" بيتحرك تلقائياً مع تغيير ارتفاع الحيطة
-#   ✅ FIXED: الكمر الثابت بيتقيّد لو خرج فوق الحيطة
-#   ✅ ADDED: قائمة "🔧 MR: Fix Beams Follow Ceiling"
-#   ✅ ADDED: قائمة "📊 MR: Beam Status Report"
+# 🔧 الإصلاحات في v4.6:
+#   ✅ الكمر "يتبع السقف" يلتصق بالسقف فوراً عند التفعيل (قبل أو بعد الإنشاء)
+#   ✅ أي تغيير في ارتفاع الحيطة يُحرّك الكمر ديناميكياً
+#   ✅ Elevation و Top-offset متزامنين لحظياً في الدايلوج
+#   ✅ resize_existing_walls يحدّث خاصية الارتفاع دايماً (ensure)
+#   ✅ build_single_beam يقرأ ارتفاع الحيطة live من الـ entity
+#   ✅ ModelObserver يرصد أي تعديل خارجي ويصحح الكمرات تلقائياً
+#   ✅ rebuild_all_beams بدون sync داخلي (لا يحذف الكمر الجديد)
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -28,6 +29,18 @@ begin
 rescue LoadError
 end
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🌟 ModelObserver — يرصد أي تعديل ويصحح الكمرات اللي "تتبع السقف" تلقائياً
+# ═══════════════════════════════════════════════════════════════════════════════
+class MHD_BeamAutoFollower < Sketchup::ModelObserver
+  def onTransactionCommit(_model)
+    return unless defined?(MHD_RoomBuilder_Context)
+    MHD_RoomBuilder_Context.auto_follow_beams_all_rooms
+  rescue => e
+    puts "⚠️ BeamAutoFollower: #{e.message}"
+  end
+end
+
 module MHD_RoomBuilder_Context
   extend self
 
@@ -35,9 +48,10 @@ module MHD_RoomBuilder_Context
   DICT = 'MHD_ROOM_BUILDER'
   PREF_KEY = 'MHD_ROOM_BUILDER_UI'
   LOGO_URL = 'https://mhdesign-eg.com/SKETCHUP/components/logo3.png'
-  VERSION = 'v4.5'
+  VERSION = 'v4.6'
 
   @preview_states = {}
+  @auto_follow_running = false
 
   # ═══════════════════════════════════════════════════════════
   # Helpers
@@ -557,24 +571,43 @@ module MHD_RoomBuilder_Context
     keys.any? { |k| old_d[k].to_s != new_d[k].to_s }
   end
 
+  # ═══════════════════════════════════════════════════════════════
+  # ✅ v4.6 — resize_existing_walls: يحدّث الخاصية دايماً حتى لو فشل pushpull
+  # ═══════════════════════════════════════════════════════════════
   def resize_existing_walls(room_group, delta, new_wall_h_cm)
     room_group.entities.to_a.each do |inst|
       next unless inst.valid?
       next unless inst.is_a?(Sketchup::ComponentInstance)
       next unless inst.get_attribute(DICT, 'النوع').to_s == 'حائط'
-      definition = inst.definition
-      if definition.instances.length > 1
-        inst.make_unique
-        definition = inst.definition
-      end
-      top_face = definition.entities.grep(Sketchup::Face).find { |f| f.valid? && f.normal.z > 0.9 }
-      next unless top_face
+
       begin
-        top_face.pushpull(delta, false)
-      rescue
-        next
+        definition = inst.definition
+        if definition.instances.length > 1
+          begin
+            inst.make_unique
+            definition = inst.definition
+          rescue => e
+            puts "⚠️ make_unique: #{e.message}"
+          end
+        end
+
+        top_face = definition.entities.grep(Sketchup::Face).find do |f|
+          f.valid? && f.normal.z > 0.9
+        end
+
+        if top_face && delta.abs > 0.0001
+          begin
+            top_face.pushpull(delta, false)
+          rescue => e
+            puts "⚠️ pushpull wall #{inst.name}: #{e.message}"
+          end
+        end
+      rescue => e
+        puts "⚠️ resize wall: #{e.message}"
+      ensure
+        # 🔑 الأهم — نحدّث الخاصية دايماً
+        inst.set_attribute(DICT, 'الارتفاع سم', new_wall_h_cm) if inst.valid?
       end
-      inst.set_attribute(DICT, 'الارتفاع سم', new_wall_h_cm)
     end
   end
 
@@ -685,7 +718,7 @@ module MHD_RoomBuilder_Context
   end
 
   # ═══════════════════════════════════════════════════════════════════
-  # BEAMS ENGINE — v4.5 FIXED
+  # BEAMS ENGINE — v4.6 DYNAMIC
   # ═══════════════════════════════════════════════════════════════════
 
   def beams_from_room(room_group)
@@ -720,10 +753,14 @@ module MHD_RoomBuilder_Context
     outward.normalize! if outward.length > 0.001
     inward = Geom::Vector3d.new(-outward.x, -outward.y, 0)
     inward.normalize! if inward.length > 0.001
+
+    # 🔑 اقرأ ارتفاع الحيطة live من الـ entity
+    live_h = wall.get_attribute(DICT, 'الارتفاع سم').to_f
+
     {
       'p1' => p1, 'p2' => p2, 'p3' => p3, 'p4' => p4,
       'length_cm' => p1.distance(p2).to_cm,
-      'wall_h_cm' => wall.get_attribute(DICT, 'الارتفاع سم').to_f,
+      'wall_h_cm' => live_h > 0 ? live_h : 280.0,
       'wall_t_cm' => wall.get_attribute(DICT, 'السمك سم').to_f,
       'number' => wall.get_attribute(DICT, 'رقم الحائط').to_i,
       'name' => wall.name.to_s,
@@ -768,38 +805,37 @@ module MHD_RoomBuilder_Context
     end
   end
 
-  # ✅ v4.5 — build_single_beam المصلَّح
+  # ═══════════════════════════════════════════════════════════════════
+  # ✅ v4.6 — build_single_beam: يقرأ ارتفاع الحيطة live ويحسب dynamically
+  # ═══════════════════════════════════════════════════════════════════
   def build_single_beam(model, room_group, wall, spec)
     info = wall_info(wall)
     return nil unless info
 
-    height_cm = spec['height_cm'].to_f
-    depth_cm = spec['depth_cm'].to_f
+    live_wall_h_cm = info['wall_h_cm'].to_f
+
+    height_cm    = spec['height_cm'].to_f
+    depth_cm     = spec['depth_cm'].to_f
     elevation_cm = spec['elevation_cm'].to_f
-    follow_ceiling = (spec['follow_ceiling'] == true || spec['follow_ceiling'].to_s == 'true')
+    follow       = (spec['follow_ceiling'] == true || spec['follow_ceiling'].to_s == 'true')
 
-    raise 'ارتفاع الكمر لازم يكون أكبر من صفر' if height_cm <= 0
-    raise 'عمق الكمر لازم يكون أكبر من صفر' if depth_cm <= 0
-    raise 'ارتفاع الكمر من الأرض لا يمكن أن يكون سالباً' if elevation_cm < 0
+    raise 'ارتفاع الكمر لازم > 0' if height_cm <= 0
+    raise 'عمق الكمر لازم > 0'   if depth_cm  <= 0
 
-    if follow_ceiling
+    # 🔑 لو "يتبع السقف": elevation يُحسب من top_offset
+    if follow
       top_offset = spec['top_offset_cm'].to_f
       top_offset = [top_offset, 0.0].max
-      elevation_cm = info['wall_h_cm'] - top_offset - height_cm
-      elevation_cm = [[elevation_cm, 0.0].max, [info['wall_h_cm'] - height_cm, 0.0].max].min
-      spec['elevation_cm'] = elevation_cm.round(3)
-      spec['top_offset_cm'] = top_offset.round(3)
+      elevation_cm = live_wall_h_cm - top_offset - height_cm
     end
 
-    if height_cm > info['wall_h_cm']
-      height_cm = info['wall_h_cm']
+    # Clamp
+    if height_cm > live_wall_h_cm
+      height_cm    = live_wall_h_cm
       elevation_cm = 0.0
-      spec['height_cm'] = height_cm
-      spec['elevation_cm'] = elevation_cm
-    elsif elevation_cm + height_cm > info['wall_h_cm']
-      elevation_cm = [info['wall_h_cm'] - height_cm, 0.0].max
-      spec['elevation_cm'] = elevation_cm
     end
+    elevation_cm = [[elevation_cm, 0.0].max, [live_wall_h_cm - height_cm, 0.0].max].min
+    spec['elevation_cm'] = elevation_cm.round(3)
 
     p1 = info['p1']; p2 = info['p2']; inward = info['inward']
     unless inward
@@ -814,12 +850,14 @@ module MHD_RoomBuilder_Context
     base_z = p1.z + elevation_cm.cm
     depth_actual = depth_cm.cm
 
-    a   = p1.clone; b   = p2.clone
+    a   = p1.clone;  b   = p2.clone
     c   = p2.offset(inward, depth_actual)
     dpt = p1.offset(inward, depth_actual)
     a.z = base_z; b.z = base_z; c.z = base_z; dpt.z = base_z
 
-    definition = model.definitions.add("MHD_كمر_#{spec['number']}_حائط_#{info['number']}_#{Time.now.to_i}_#{rand(99999)}")
+    definition = model.definitions.add(
+      "MHD_كمر_#{spec['number']}_حائط_#{info['number']}_#{Time.now.to_i}_#{rand(99999)}"
+    )
     face = definition.entities.add_face(a, b, c, dpt)
     raise 'تعذر إنشاء سطح الكمر' unless face
     face.reverse! if face.normal.z < 0
@@ -830,9 +868,7 @@ module MHD_RoomBuilder_Context
     beam_inst.name = beam_name
     beam_inst.layer = tag(model, beam_name)
 
-    top_offset = info['wall_h_cm'] - elevation_cm - height_cm
-    bottom_offset = elevation_cm
-    ceiling_distance = info['wall_h_cm'] - (elevation_cm + height_cm)
+    top_offset_actual = live_wall_h_cm - elevation_cm - height_cm
 
     set_attrs(beam_inst, {
       'UUID' => spec['uuid'],
@@ -846,65 +882,58 @@ module MHD_RoomBuilder_Context
       'ارتفاع الكمر سم' => height_cm,
       'عمق الكمر سم' => depth_cm,
       'ارتفاع من الأرض سم' => elevation_cm,
-      'المسافة من السقف سم' => ceiling_distance,
-      'المسافة من الأرض سم' => bottom_offset,
-      'يتبع السقف' => follow_ceiling ? 'نعم' : 'لا',
-      'إزاحة من أعلى الحائط سم' => top_offset,
+      'المسافة من السقف سم' => top_offset_actual,
+      'المسافة من الأرض سم' => elevation_cm,
+      'يتبع السقف' => follow ? 'نعم' : 'لا',
+      'إزاحة من أعلى الحائط سم' => top_offset_actual,
       'طول الكمر سم' => info['length_cm'].round(2),
-      'ارتفاع الحائط سم' => info['wall_h_cm'],
+      'ارتفاع الحائط سم' => live_wall_h_cm,
       'Wall_P1' => pt_to_s(p1),
       'Wall_P2' => pt_to_s(p2)
     })
     beam_inst
   end
 
-  # ✅ v4.5 — rebuild_all_beams بدون sync داخلي (الإصلاح الأهم!)
+  # ═══════════════════════════════════════════════════════════════════
+  # ✅ v4.6 — rebuild_all_beams: بدون sync، يقرأ live، تتبع أخطاء
+  # ═══════════════════════════════════════════════════════════════════
   def rebuild_all_beams(room_group)
-    # ⚠️ مهم جداً: مفيش sync_beams_with_scene هنا
-    # لأننا ممكن نضيف كمر جديد (في JSON بس، لسه مش في المشهد)
-    # فلو عملنا sync، هيمسحه قبل ما يتبنى
+    return true unless room_group && room_group.valid?
+
     beams = beams_from_room(room_group)
     delete_room_beams(room_group)
     return true if beams.empty?
 
     model = Sketchup.active_model
+    rebuilt = 0
+    failed  = 0
 
     beams.group_by { |b| b['wall_number'].to_i }.each do |wall_number, wall_beams|
       wall = find_wall_in_room(room_group, wall_number)
-      next unless wall && wall.valid?
+      unless wall && wall.valid?
+        puts "⚠️ حائط #{wall_number} مش موجود — تخطي #{wall_beams.length} كمر"
+        next
+      end
 
       current_wall_h = wall.get_attribute(DICT, 'الارتفاع سم').to_f
-      next if current_wall_h <= 0
+      if current_wall_h <= 0
+        puts "⚠️ حائط #{wall_number} ارتفاعه غير معروف — تخطي"
+        next
+      end
 
       wall_beams.each do |spec|
-        # ✅ دائماً أعد حساب ارتفاع الكمر اللي "يتبع السقف"
-        follow = (spec['follow_ceiling'] == true || spec['follow_ceiling'].to_s == 'true')
-        h = spec['height_cm'].to_f
-        if h > 0
-          if follow
-            top_off = spec['top_offset_cm'].to_f
-            top_off = [top_off, 0.0].max
-            new_elev = current_wall_h - top_off - h
-            new_elev = [[new_elev, 0.0].max, [current_wall_h - h, 0.0].max].min
-            spec['elevation_cm'] = new_elev.round(3)
-            spec['top_offset_cm'] = top_off.round(3)
-          else
-            # ✅ clamp الكمر الثابت لو خرج فوق الحيطة
-            max_elev = [current_wall_h - h, 0.0].max
-            if spec['elevation_cm'].to_f > max_elev
-              spec['elevation_cm'] = max_elev.round(3)
-            end
-          end
-        end
-
         begin
           build_single_beam(model, room_group, wall, spec)
+          rebuilt += 1
         rescue => e
-          puts "⚠️ لم يتم إنشاء كمر #{spec['number']} للحائط #{wall_number}: #{e.message}"
+          failed += 1
+          puts "❌ فشل كمر #{spec['number']} حائط #{wall_number}: #{e.message}"
         end
       end
     end
+
     save_beams(room_group, beams)
+    puts "🔨 rebuild_all_beams: #{rebuilt} كمر اتبنى، #{failed} فشل"
     true
   end
 
@@ -927,7 +956,7 @@ module MHD_RoomBuilder_Context
     synced
   end
 
-  # ✅ v4.5 — force_sync_beams! لتصحيح موقع كل الكمرات
+  # ✅ v4.6 — force_sync_beams!: يستخدم live wall heights
   def force_sync_beams!(room_group)
     return 0 unless room_group && room_group.valid?
     beams = beams_from_room(room_group)
@@ -940,7 +969,7 @@ module MHD_RoomBuilder_Context
     walls.each do |w|
       num = w.get_attribute(DICT, 'رقم الحائط').to_i
       h = w.get_attribute(DICT, 'الارتفاع سم').to_f
-      wall_h_map[num] = h
+      wall_h_map[num] = h if h > 0
     end
 
     changed_count = 0
@@ -977,36 +1006,45 @@ module MHD_RoomBuilder_Context
     changed_count
   end
 
-  # ✅ v4.5 — recalculate_beam_elevations (للاستخدام عند تغيير ارتفاع الحيطة)
+  # ✅ v4.6 — recalculate_beam_elevations: يستخدم live wall heights من الـ entities
   def recalculate_beam_elevations(room_group, old_wall_h_cm, new_wall_h_cm)
     beams = beams_from_room(room_group)
     return if beams.empty?
 
-    new_h = new_wall_h_cm.to_f
-    return if new_h <= 0
+    walls = walls_in_room(room_group)
+    wall_h_map = {}
+    walls.each do |w|
+      num = w.get_attribute(DICT, 'رقم الحائط').to_i
+      h = w.get_attribute(DICT, 'الارتفاع سم').to_f
+      wall_h_map[num] = h if h > 0
+    end
+
+    fallback_h = new_wall_h_cm.to_f
+    fallback_h = old_wall_h_cm.to_f if fallback_h <= 0
+    fallback_h = 280.0 if fallback_h <= 0
 
     changed = false
     beams.each do |spec|
-      follow = (spec['follow_ceiling'] == true || spec['follow_ceiling'].to_s == 'true')
+      follow    = (spec['follow_ceiling'] == true || spec['follow_ceiling'].to_s == 'true')
       height_cm = spec['height_cm'].to_f
       next if height_cm <= 0
+
+      wall_num = spec['wall_number'].to_i
+      wall_h   = wall_h_map[wall_num].to_f
+      wall_h   = fallback_h if wall_h <= 0
 
       if follow
         top_offset = spec['top_offset_cm'].to_f
         top_offset = [top_offset, 0.0].max
-        new_elevation = new_h - top_offset - height_cm
-        max_elevation = [new_h - height_cm, 0.0].max
+        new_elevation = wall_h - top_offset - height_cm
+        max_elevation = [wall_h - height_cm, 0.0].max
         new_elevation = [[new_elevation, 0.0].max, max_elevation].min
         if (spec['elevation_cm'].to_f - new_elevation).abs > 0.001
           spec['elevation_cm'] = new_elevation.round(3)
           changed = true
         end
-        if (spec['top_offset_cm'].to_f - top_offset).abs > 0.001
-          spec['top_offset_cm'] = top_offset.round(3)
-          changed = true
-        end
       else
-        max_elevation = [new_h - height_cm, 0.0].max
+        max_elevation = [wall_h - height_cm, 0.0].max
         if spec['elevation_cm'].to_f > max_elevation
           spec['elevation_cm'] = max_elevation.round(3)
           changed = true
@@ -1014,6 +1052,66 @@ module MHD_RoomBuilder_Context
       end
     end
     save_beams(room_group, beams) if changed
+  end
+
+  # ═══════════════════════════════════════════════════════════════════
+  # 🌟 v4.6 — auto_follow_beams_all_rooms: يرصد أي تغيير خارجي
+  # ═══════════════════════════════════════════════════════════════════
+  def auto_follow_beams_all_rooms
+    model = Sketchup.active_model
+    return if @auto_follow_running
+    @auto_follow_running = true
+
+    model.entities.to_a.each do |e|
+      next unless e.is_a?(Sketchup::Group)
+      next unless (e.get_attribute(DICT, 'النوع').to_s == 'غرفة' rescue false)
+      next unless e.valid?
+
+      beams = beams_from_room(e)
+      next if beams.empty?
+
+      walls = walls_in_room(e)
+      next if walls.empty?
+
+      wall_h_map = {}
+      walls.each do |w|
+        num = w.get_attribute(DICT, 'رقم الحائط').to_i
+        h = w.get_attribute(DICT, 'الارتفاع سم').to_f
+        wall_h_map[num] = h if h > 0
+      end
+
+      needs_rebuild = false
+      beams.each do |spec|
+        next unless (spec['follow_ceiling'] == true || spec['follow_ceiling'].to_s == 'true')
+        wall_num = spec['wall_number'].to_i
+        wall_h = wall_h_map[wall_num].to_f
+        next if wall_h <= 0
+        top_off = spec['top_offset_cm'].to_f
+        h = spec['height_cm'].to_f
+        next if h <= 0
+        expected = wall_h - top_off - h
+        expected = [[expected, 0.0].max, [wall_h - h, 0.0].max].min
+        if (spec['elevation_cm'].to_f - expected).abs > 0.5
+          needs_rebuild = true
+          break
+        end
+      end
+
+      if needs_rebuild
+        begin
+          model.start_operation('MHD Auto Follow Beams', true)
+          recalculate_beam_elevations(e, 0, 0)
+          rebuild_all_beams(e)
+          model.commit_operation
+          model.active_view.invalidate
+        rescue => ex
+          model.abort_operation rescue nil
+          puts "⚠️ auto_follow room #{e.name}: #{ex.message}"
+        end
+      end
+    end
+  ensure
+    @auto_follow_running = false
   end
 
   def rename_beam_tags_for_room(room_group)
@@ -1033,7 +1131,9 @@ module MHD_RoomBuilder_Context
     find_room_group(entity)
   end
 
-  # ✅ v4.5 — open_beam_dialog مع sync قبل الفتح
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ✅ v4.6 — open_beam_dialog: نسخة ديناميكية كاملة
+  # ═══════════════════════════════════════════════════════════════════════════
   def open_beam_dialog(target, edit_uuid = nil)
     room_group = beam_room_from_entity(target)
     unless room_group
@@ -1041,7 +1141,6 @@ module MHD_RoomBuilder_Context
       return
     end
 
-    # ✅ sync قبل فتح الدايلوج (عشان يتنظف الكمر المحذوف يدوياً)
     begin
       sync_beams_with_scene(room_group)
     rescue => e
@@ -1081,31 +1180,48 @@ module MHD_RoomBuilder_Context
     end
 
     number = current ? current['number'].to_i : next_beam_number(room_group, info['number'])
-    defaults = {
-      'number' => number,
-      'height_cm' => current ? current['height_cm'].to_f : 20.0,
-      'depth_cm' => current ? current['depth_cm'].to_f : [info['wall_t_cm'], 20.0].max,
-      'elevation_cm' => current ? current['elevation_cm'].to_f : [info['wall_h_cm'] - 20.0, 0.0].max,
-      'follow_ceiling' => current ? (current['follow_ceiling'] == true) : false,
-      'top_offset_cm' => current ? current['top_offset_cm'].to_f : 0.0
-    }
-    if defaults['follow_ceiling'] && defaults['top_offset_cm'] <= 0
-      defaults['top_offset_cm'] = info['wall_h_cm'] - defaults['elevation_cm'] - defaults['height_cm']
-      defaults['top_offset_cm'] = [defaults['top_offset_cm'], 0.0].max
+
+    # ═══════════════════════════════════════════════════════════════════
+    # 🔑 v4.6 — حساب القيم الافتراضية
+    # ═══════════════════════════════════════════════════════════════════
+    wall_h_now = info['wall_h_cm'].to_f
+    wall_h_now = 280.0 if wall_h_now <= 0
+
+    def_h = current ? current['height_cm'].to_f : 20.0
+    def_h = 20.0 if def_h <= 0
+
+    def_d = current ? current['depth_cm'].to_f : [info['wall_t_cm'], 20.0].max
+    def_d = 20.0 if def_d <= 0
+
+    def_follow = current ? (current['follow_ceiling'] == true || current['follow_ceiling'].to_s == 'true') : false
+
+    if def_follow
+      # ✅ "يتبع السقف": top_offset هو الأساس
+      def_top_off = current ? current['top_offset_cm'].to_f : 0.0
+      def_top_off = 0.0 if def_top_off < 0
+      def_elev = [wall_h_now - def_top_off - def_h, 0.0].max
+      def_elev = [def_elev, [wall_h_now - def_h, 0.0].max].min
+    else
+      # ⚠️ ثابت: elevation هو الأساس
+      def_elev = current ? current['elevation_cm'].to_f : [wall_h_now - def_h, 0.0].max
+      def_elev = [[def_elev, 0.0].max, [wall_h_now - def_h, 0.0].max].min
+      def_top_off = [wall_h_now - def_elev - def_h, 0.0].max
     end
 
-    follow_toggle_class = defaults['follow_ceiling'] ? 'on' : ''
-    follow_text = defaults['follow_ceiling'] ? 'نعم — يتحرك مع السقف' : 'لا — ثابت في مكانه'
-    follow_opts_class = defaults['follow_ceiling'] ? 'active' : ''
-    follow_hint = defaults['follow_ceiling'] ? '✅ الكمر هيتحرك تلقائياً مع تغيير ارتفاع السقف.' : '📌 الكمر هيفضل ثابت على ارتفاعه الحالي حتى لو السقف اتغير.'
-    ceiling_dist = info['wall_h_cm'] - defaults['elevation_cm'] - defaults['height_cm']
-    floor_dist = defaults['elevation_cm']
+    follow_toggle_class = def_follow ? 'on' : ''
+    follow_text = def_follow ? 'نعم — ملتصق بالسقف' : 'لا — ثابت في مكانه'
+    follow_opts_class = def_follow ? 'active' : ''
+    follow_hint = def_follow \
+      ? '✅ الكمر ملتصق بالسقف — هيتحرك تلقائياً مع أي تغيير في ارتفاع الحيطة.' \
+      : '📌 الكمر ثابت على ارتفاعه الحالي. لو فعّلت "يتبع السقف" هيلتصق بالسقف فوراً.'
+    ceiling_dist = wall_h_now - def_elev - def_h
+    floor_dist = def_elev
 
     dlg = UI::HtmlDialog.new(
       dialog_title: is_beam ? "تعديل كمر #{number}" : "إضافة كمر | #{info['name']}",
-      preferences_key: "#{PREF_KEY}_BEAM",
+      preferences_key: "#{PREF_KEY}_BEAM_V46",
       scrollable: true, resizable: true,
-      width: 420, height: 620,
+      width: 440, height: 660,
       style: UI::HtmlDialog::STYLE_DIALOG
     )
 
@@ -1127,12 +1243,13 @@ body{margin:0;background:#07131d;color:#eaf4f8;font-family:Arial,Tahoma,sans-ser
 .info{font-size:12px;color:#9fb6c5;line-height:1.7;margin-top:5px}
 .group{background:#0b1b27;border:1px solid #1c3342;border-radius:10px;padding:12px;margin-bottom:12px}
 .group-title{font-size:14px;font-weight:900;color:#39a245;margin-bottom:10px}
-.row{display:grid;grid-template-columns:155px 1fr;gap:8px;align-items:center;margin-bottom:9px}
+.row{display:grid;grid-template-columns:160px 1fr;gap:8px;align-items:center;margin-bottom:9px}
 label{font-size:13px;font-weight:900;color:#d8e8ef}
 input[type=number],input[type=text]{width:100%;height:36px;border:0;border-radius:7px;background:#111f2a;color:#fff;outline:1px solid #243d4f;text-align:center;font-size:14px}
 input:focus{outline:2px solid #39a245}
+input[readonly]{background:#0a1620;color:#7f98a8}
 .hint{font-size:11px;color:#8eabbc;line-height:1.55;margin-top:6px;background:#091923;border-radius:8px;padding:8px}
-.switch-row{display:grid;grid-template-columns:155px 1fr;gap:8px;align-items:center;margin-bottom:10px}
+.switch-row{display:grid;grid-template-columns:160px 1fr;gap:8px;align-items:center;margin-bottom:10px}
 .toggle{height:36px;background:#111f2a;border-radius:8px;outline:1px solid #243d4f;display:flex;align-items:center;justify-content:space-between;padding:0 10px;cursor:pointer;user-select:none;color:#fff;font-size:13px}
 .toggle.on{background:#0f2a1b;outline:2px solid #39a245}
 .toggle .dot{width:18px;height:18px;border-radius:50%;background:#355467;border:1px solid #57798a}
@@ -1147,25 +1264,29 @@ button:hover{filter:brightness(1.08)}
 .save{background:#4de37a;color:#061923}
 .close{background:#0b1b27;color:#fff;border:1px solid #243d4f}
 .delete{background:#7d2631;color:#fff}
+.badge{display:inline-block;background:#17384a;color:#cfe9f6;padding:3px 9px;border-radius:999px;font-size:10px;margin-bottom:6px}
 </style>
 </head>
 <body>
 <div class="app">
 <div class="scroll">
+
   <div class="head">
     <div class="title">#{is_beam ? "⚙️ تعديل كمر #{number}" : '➕ إضافة كمر'}</div>
-    <div class="info">الحائط: #{info['name']}<br>طول الحائط: #{info['length_cm'].round(2)} سم<br>ارتفاع الحائط الحالي: #{info['wall_h_cm'].round(2)} سم</div>
+    <div class="info">الحائط: #{info['name']}<br>طول الحائط: #{info['length_cm'].round(2)} سم<br>ارتفاع الحائط الحالي: <b style="color:#4de37a">#{wall_h_now.round(2)} سم</b></div>
   </div>
+
   <div class="group">
     <div class="group-title">📐 المقاسات الأساسية</div>
-    <div class="row"><label>ارتفاع الكمر سم</label><input id="height" type="number" min="0.1" step="0.1" value="#{defaults['height_cm']}" oninput="updateInfo()"></div>
-    <div class="row"><label>عمق الكمر سم</label><input id="depth" type="number" min="0.1" step="0.1" value="#{defaults['depth_cm']}"></div>
-    <div class="row"><label>ارتفاع من الأرض سم</label><input id="elevation" type="number" min="0" step="0.1" value="#{defaults['elevation_cm']}" oninput="updateInfo()"></div>
+    <div class="row"><label>ارتفاع الكمر سم</label><input id="height" type="number" min="0.1" step="0.1" value="#{def_h}" oninput="onHeightChange()"></div>
+    <div class="row"><label>عمق الكمر سم</label><input id="depth" type="number" min="0.1" step="0.1" value="#{def_d}"></div>
+    <div class="row"><label>ارتفاع من الأرض سم</label><input id="elevation" type="number" min="0" step="0.1" value="#{def_elev}" oninput="onElevationChange()"></div>
     <div class="info-box" id="live_info">
       المسافة من السقف: <b id="ceil_dist">#{ceiling_dist.round(2)}</b> سم<br>
       المسافة من الأرض: <b id="floor_dist">#{floor_dist.round(2)}</b> سم
     </div>
   </div>
+
   <div class="group">
     <div class="group-title">🎯 سلوك الكمر عند تغيير ارتفاع السقف</div>
     <div class="switch-row">
@@ -1176,21 +1297,24 @@ button:hover{filter:brightness(1.08)}
       </div>
     </div>
     <div class="follow-options #{follow_opts_class}" id="follow_opts">
-      <div class="row"><label>المسافة من أعلى الحائط سم</label><input id="top_offset" type="number" min="0" step="0.1" value="#{defaults['top_offset_cm']}"></div>
-      <div class="hint">لو السقف اتغير من #{info['wall_h_cm'].round(2)} سم إلى قيمة جديدة، الكمر هيتحرك تلقائياً عشان يفضل على نفس المسافة من السقف.</div>
+      <div class="row"><label>المسافة من أعلى الحائط سم</label><input id="top_offset" type="number" min="0" step="0.1" value="#{def_top_off}" oninput="onTopOffsetChange()"></div>
+      <div class="hint">💡 <b>0</b> = ملتصق بالسقف تماماً. أي قيمة أكبر = نازل عن السقف بالمسافة دي.</div>
     </div>
     <div class="hint" id="follow_hint">#{follow_hint}</div>
   </div>
+
   <div class="group">
     <div class="group-title">📊 معلومات مفصلة</div>
     <div class="info-box">
-      الحائط: <b>#{info['name']}</b><br>
+      <span class="badge">حائط #{info['number']}</span>
+      الاسم: <b>#{info['name']}</b><br>
       ارتفاع الحائط: <b>#{info['wall_h_cm'].round(2)}</b> سم<br>
       طول الحائط: <b>#{info['length_cm'].round(2)}</b> سم<br>
       سمك الحائط: <b>#{info['wall_t_cm'].round(2)}</b> سم<br>
       رقم الكمر: <b>#{number}</b>
     </div>
   </div>
+
 </div>
 <div class="footer">
   <button class="save" onclick="submitData()">#{is_beam ? '💾 حفظ التعديل' : '➕ إضافة الكمر'}</button>
@@ -1199,49 +1323,107 @@ button:hover{filter:brightness(1.08)}
 </div>
 </div>
 <script>
-const WALL_H = #{info['wall_h_cm'].to_f};
-function val(id){return document.getElementById(id).value}
+// ══════════════════════════════════════════════════════════════════
+// 🔑 WALL_H: ارتفاع الحيطة الحالي (live)
+// ══════════════════════════════════════════════════════════════════
+const WALL_H = #{wall_h_now.to_f};
+let followMode = #{def_follow ? 'true' : 'false'};
+
+function val(id){ return document.getElementById(id).value; }
+function setVal(id, v){ document.getElementById(id).value = v; }
+function num(id){ const x = parseFloat(val(id)); return isFinite(x) ? x : 0; }
+
 function toggleFollow(){
   const el = document.getElementById('follow_toggle');
   el.classList.toggle('on');
-  const on = el.classList.contains('on');
-  document.getElementById('follow_text').textContent = on ? 'نعم — يتحرك مع السقف' : 'لا — ثابت في مكانه';
-  document.getElementById('follow_opts').classList.toggle('active', on);
-  document.getElementById('follow_hint').textContent = on
-    ? '✅ الكمر هيتحرك تلقائياً مع تغيير ارتفاع السقف.'
-    : '📌 الكمر هيفضل ثابت على ارتفاعه الحالي حتى لو السقف اتغير.';
+  followMode = el.classList.contains('on');
+
+  document.getElementById('follow_text').textContent =
+    followMode ? 'نعم — ملتصق بالسقف' : 'لا — ثابت في مكانه';
+  document.getElementById('follow_opts').classList.toggle('active', followMode);
+  document.getElementById('follow_hint').textContent = followMode
+    ? '✅ الكمر ملتصق بالسقف — هيتحرك تلقائياً مع أي تغيير في ارتفاع الحيطة.'
+    : '📌 الكمر ثابت على ارتفاعه الحالي. لو فعّلت "يتبع السقف" هيلتصق بالسقف فوراً.';
+
+  if (followMode) {
+    // 🔑 لما يتفعّل: افتراضياً يلتصق بالسقف (top_offset = 0)
+    const h = num('height');
+    setVal('top_offset', 0);
+    setVal('elevation', Math.max(WALL_H - h, 0).toFixed(2));
+  } else {
+    // 🔑 لما يتفصل: نثبّت المكان الحالي
+    const h = num('height');
+    const z = num('elevation');
+    setVal('top_offset', Math.max(WALL_H - z - h, 0).toFixed(2));
+  }
   updateInfo();
 }
+
+function onElevationChange(){
+  if (followMode) {
+    const h = num('height');
+    const z = num('elevation');
+    setVal('top_offset', Math.max(WALL_H - z - h, 0).toFixed(2));
+  }
+  updateInfo();
+}
+
+function onTopOffsetChange(){
+  if (followMode) {
+    const h = num('height');
+    const to = num('top_offset');
+    setVal('elevation', Math.max(WALL_H - to - h, 0).toFixed(2));
+  }
+  updateInfo();
+}
+
+function onHeightChange(){
+  if (followMode) {
+    const h = num('height');
+    const to = num('top_offset');
+    setVal('elevation', Math.max(WALL_H - to - h, 0).toFixed(2));
+  }
+  updateInfo();
+}
+
 function updateInfo(){
-  const h = parseFloat(val('height')) || 0;
-  const e = parseFloat(val('elevation')) || 0;
+  const h = num('height');
+  const e = num('elevation');
   const ceilDist = WALL_H - e - h;
   document.getElementById('ceil_dist').textContent = ceilDist.toFixed(2);
   document.getElementById('floor_dist').textContent = e.toFixed(2);
 }
+
 function submitData(){
-  const h=parseFloat(val('height'));
-  const d=parseFloat(val('depth'));
-  const z=parseFloat(val('elevation'));
-  const follow = document.getElementById('follow_toggle').classList.contains('on');
-  let topOffset = parseFloat(val('top_offset')) || 0;
-  if(!(h>0) || !(d>0) || !(z>=0)){alert('راجع المقاسات');return;}
-  if(z+h>WALL_H+0.001){alert('ارتفاع الكمر + ارتفاعه من الأرض أكبر من ارتفاع الحائط');return;}
-  if(follow && topOffset <= 0){
-    topOffset = Math.max(WALL_H - z - h, 0);
+  const h = num('height');
+  const d = num('depth');
+  const z = num('elevation');
+  const topOff = num('top_offset');
+  const follow = followMode;
+
+  if (!(h > 0) || !(d > 0) || !(z >= 0)) {
+    alert('راجع المقاسات — لازم كل القيم تكون أكبر من صفر.');
+    return;
   }
-  if(!follow){
-    topOffset = Math.max(WALL_H - z - h, 0);
+  if (z + h > WALL_H + 0.001) {
+    alert('ارتفاع الكمر + ارتفاعه من الأرض أكبر من ارتفاع الحائط.');
+    return;
   }
+  if (follow && topOff < 0) {
+    alert('المسافة من السقف لا يمكن أن تكون سالبة.');
+    return;
+  }
+
   sketchup.submit(JSON.stringify({
     height_cm: h,
     depth_cm: d,
     elevation_cm: z,
     follow_ceiling: follow,
-    top_offset_cm: topOffset
+    top_offset_cm: topOff
   }));
 }
-function removeBeam(){sketchup.removeBeam()}
+
+function removeBeam(){ sketchup.removeBeam(); }
 updateInfo();
 </script>
 </body>
@@ -1257,52 +1439,75 @@ updateInfo();
         h = data['height_cm'].to_f
         d = data['depth_cm'].to_f
         z = data['elevation_cm'].to_f
-        follow = data['follow_ceiling'] == true
+        follow = (data['follow_ceiling'] == true)
         top_offset = data['top_offset_cm'].to_f
-        if h <= 0 || d <= 0 || z < 0 || z + h > info['wall_h_cm'] + 0.001
-          raise 'قيم الكمر غير صالحة بالنسبة لارتفاع الحائط.'
+
+        live_wall_h = wall.get_attribute(DICT, 'الارتفاع سم').to_f
+        live_wall_h = info['wall_h_cm'] if live_wall_h <= 0
+
+        if h <= 0 || d <= 0 || z < 0
+          raise 'قيم الكمر غير صالحة.'
         end
+
+        # 🔑 الحساب الديناميكي
+        if follow
+          top_offset = [top_offset, 0.0].max
+          z = live_wall_h - top_offset - h
+          z = [[z, 0.0].max, [live_wall_h - h, 0.0].max].min
+        else
+          max_elev = [live_wall_h - h, 0.0].max
+          z = [[z, 0.0].max, max_elev].min
+        end
+
+        if z + h > live_wall_h + 0.001
+          raise 'قيم الكمر غير صالحة بالنسبة لارتفاع الحائط الحالي.'
+        end
+
         model = Sketchup.active_model
-        model.start_operation(is_beam ? 'MHD Edit Beam' : 'MHD Add Beam', true)
+        model.start_operation(is_beam ? 'MHD Edit Beam v4.6' : 'MHD Add Beam v4.6', true)
         begin
           beams = beams_from_room(room_group)
           if is_beam
             idx = beams.index { |b| b['uuid'].to_s == target.get_attribute(DICT, 'UUID').to_s }
             idx ||= beams.index { |b| b['uuid'].to_s == current['uuid'].to_s } if current
             raise 'لم يتم العثور على بيانات الكمر.' unless idx
-            beams[idx]['height_cm'] = h
-            beams[idx]['depth_cm'] = d
-            beams[idx]['elevation_cm'] = z
+
+            beams[idx]['height_cm']      = h
+            beams[idx]['depth_cm']       = d
+            beams[idx]['elevation_cm']   = z
             beams[idx]['follow_ceiling'] = follow
-            beams[idx]['top_offset_cm'] = top_offset
-            beams[idx]['wall_number'] = info['number']
-            beams[idx]['wall_name'] = info['name']
-            beams[idx]['room_name'] = info['room_name']
-            beams[idx]['room_uuid'] = info['room_uuid']
+            beams[idx]['top_offset_cm']  = top_offset
+            beams[idx]['wall_number']    = info['number']
+            beams[idx]['wall_name']      = info['name']
+            beams[idx]['room_name']      = info['room_name']
+            beams[idx]['room_uuid']      = info['room_uuid']
           else
-            # ✅ إضافة كمر جديد — الحفظ في JSON أولاً
             beams << {
-              'uuid' => uuid,
-              'wall_number' => info['number'],
-              'wall_name' => info['name'],
-              'room_uuid' => info['room_uuid'],
-              'room_name' => info['room_name'],
-              'number' => number,
-              'height_cm' => h,
-              'depth_cm' => d,
-              'elevation_cm' => z,
+              'uuid'           => uuid,
+              'wall_number'    => info['number'],
+              'wall_name'      => info['name'],
+              'room_uuid'      => info['room_uuid'],
+              'room_name'      => info['room_name'],
+              'number'         => number,
+              'height_cm'      => h,
+              'depth_cm'       => d,
+              'elevation_cm'   => z,
               'follow_ceiling' => follow,
-              'top_offset_cm' => top_offset
+              'top_offset_cm'  => top_offset
             }
           end
+
           save_beams(room_group, beams)
-          # ✅ rebuild_all_beams هتبني كل الكمرات (بدون sync)
           rebuild_all_beams(room_group)
           model.commit_operation
           model.active_view.invalidate
           dlg.close
-          msg = follow ? "✅ تم #{is_beam ? 'تعديل' : 'إضافة'} الكمر — سيتحرك تلقائياً مع تغيير السقف" :
-                         "✅ تم #{is_beam ? 'تعديل' : 'إضافة'} الكمر — سيبقى ثابتاً عند تغيير السقف"
+
+          msg = if follow
+                  "✅ تم #{is_beam ? 'تعديل' : 'إضافة'} الكمر\n🔄 الكمر هيتحرك تلقائياً مع أي تغيير في ارتفاع الحيطة.\n📍 ملتصق بالسقف على مسافة #{top_offset.round(2)} سم من أعلى الحائط."
+                else
+                  "✅ تم #{is_beam ? 'تعديل' : 'إضافة'} الكمر\n📌 الكمر ثابت على ارتفاع #{z.round(2)} سم من الأرض."
+                end
           UI.messagebox(msg)
         rescue => e
           model.abort_operation rescue nil
@@ -1414,11 +1619,7 @@ updateInfo();
 
       floor_mat_info = capture_floor_material_info(room_group)
 
-      # ✅ sync قبل التعديل (لتنظيف المحذوف)
       sync_beams_with_scene(room_group)
-
-      # ✅ إعادة حساب ارتفاعات الكمرات اللي "يتبع السقف" قبل resize
-      recalculate_beam_elevations(room_group, wall_h_old, wall_h_new) if wall_h_changed
 
       if name_changed
         begin
@@ -1454,11 +1655,15 @@ updateInfo();
                         new_outward, pts,
                         wall_h_new.cm, ceil_t_new.cm, ceil_t_new, new_data)
         end
+        # 🔑 بعد تغيير السمك، أعِد حساب الارتفاعات
+        recalculate_beam_elevations(room_group, wall_h_old, wall_h_new) if wall_h_changed
       else
         if wall_h_changed
           delta_h = (wall_h_new - wall_h_old).cm
           resize_existing_walls(room_group, delta_h, wall_h_new)
           move_ceiling_by_delta(room_group, delta_h) unless ceiling_needs_rebuild
+          # 🔑 بعد resize، أعِد حساب ارتفاعات الكمرات بالارتفاع الجديد
+          recalculate_beam_elevations(room_group, wall_h_old, wall_h_new)
         end
         if floor_changed
           current_outward = compute_outward_pts(pts, wall_t_old.cm)
@@ -1480,7 +1685,7 @@ updateInfo();
         end
       end
 
-      # ✅ إعادة بناء الكمرات (بدون sync — الكل موجود في JSON)
+      # ✅ إعادة بناء الكمرات
       rebuild_all_beams(room_group)
       rebuild_all_shatras(room_group) if respond_to?(:rebuild_all_shatras)
       save_build_data(room_group, new_data)
@@ -1971,7 +2176,7 @@ updateInfo();
     old_pts = room_pts_from_group(room_group)
     new_pts = build_smart_wall_edit_points(room_group, wall_number, new_length, anchor, edit_mode)
     unless new_pts && polygon_valid_for_wall_edit?(new_pts)
-      UI.messagebox(ts('القيمة الجديدة أدت إلى شكل غرفة غير صالح. جرّب طولاً أكبر أو نقطة تثبيت مختلفة.'))
+      UI.messagebox(ts('القيمة الجديدة أدت إلى شكل غرفة غير صالح.'))
       return false
     end
     model = Sketchup.active_model
@@ -2685,7 +2890,7 @@ calc();
   end
 
   # ═══════════════════════════════════════════════════════════════════
-  # FLOOR MATERIAL & CEILING (مختصر للـ HTML Dialog)
+  # FLOOR MATERIAL & CEILING (HTML Dialog)
   # ═══════════════════════════════════════════════════════════════════
 
   def html_dialog_content(values)
@@ -2727,15 +2932,10 @@ input:focus,select:focus{outline:2px solid #39a245}
 .toggle{height:30px;background:#111f2a;border-radius:6px;outline:1px solid #243d4f;display:flex;align-items:center;justify-content:space-between;padding:0 8px;cursor:pointer;user-select:none;color:#fff;font-size:12px;}
 .toggle .dot{width:16px;height:16px;border-radius:50%;background:#355467}
 .toggle.on .dot{background:#39a245}
-.pattern-card{flex:0 0 112px;background:#0b1b27;border:1px solid #243d4f;border-radius:10px;padding:6px;cursor:pointer;text-align:center}
-.pattern-card.active{border-color:#39a245;background:#0f2433}
-.pattern-img{height:68px;border-radius:7px;background-size:cover;background-position:center;background-color:#182836}
-.pattern-name{font-size:11px;font-weight:900;color:#d8e8ef;margin-top:6px}
 .footer{height:58px;padding:8px 10px;border-top:1px solid #1c3342;background:#07131d;display:flex;gap:8px}
 button{height:40px;border-radius:10px;font-size:14px;font-weight:900;cursor:pointer;border:none}
 .ok{flex:2;background:#4de37a;color:#061923}
 .cancel{flex:1;background:#0b1b27;color:#fff;border:1px solid #243d4f}
-.conditional{display:none}.conditional.active{display:block}
 </style>
 </head>
 <body>
@@ -3130,7 +3330,7 @@ document.addEventListener('contextmenu',function(e){e.preventDefault();});
     wall_t  = wall_t_cm.cm
     floor_t = floor_t_cm.cm
     ceil_t  = ceil_t_cm.cm
-    model.start_operation('MHD Room Builder', true)
+    model.start_operation('MHD Room Builder v4.6', true)
     pts = face.outer_loop.vertices.map { |v| v.position }
     pts.reverse! if signed_area_xy(pts) < 0
     count = pts.length
@@ -3213,7 +3413,7 @@ document.addEventListener('contextmenu',function(e){e.preventDefault();});
   end
 
   # ═══════════════════════════════════════════════════════════════════
-  # Beam Utility Commands (Menu Items)
+  # Beam Utility Commands
   # ═══════════════════════════════════════════════════════════════════
 
   def fix_all_follow_ceiling_beams!(verbose = true)
@@ -3533,10 +3733,24 @@ rescue => e
   puts "⚠️ Safe integration: #{e.message}"
 end
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🌟 تفعيل ModelObserver لرصد أي تغيير في ارتفاع الحيطة
+# ═══════════════════════════════════════════════════════════════════════════════
+unless file_loaded?(__FILE__)
+  begin
+    Sketchup.active_model.add_observer(MHD_BeamAutoFollower.new)
+    puts "✅ MHD_BeamAutoFollower: ModelObserver نشط"
+  rescue => e
+    puts "⚠️ Observer registration: #{e.message}"
+  end
+end
+
 puts "\n" + "═" * 90
 puts "  ✅ MHD Room Builder #{MHD_RoomBuilder_Context::VERSION} — محمّل بنجاح"
-puts "  🔧 إصلاحات v4.5:"
-puts "     • الكمر بيتضاف صح (بدون sync داخلي)"
-puts "     • الكمر 'يتبع السقف' بيتحرك تلقائياً"
-puts "     • مراقبة حالة الكمرات من Plugins"
+puts "  🔧 إصلاحات v4.6:"
+puts "     • الكمر 'يتبع السقف' يلتصق فوراً عند التفعيل (قبل أو بعد الإنشاء)"
+puts "     • أي تغيير في ارتفاع الحيطة يُحرّك الكمر ديناميكياً"
+puts "     • Elevation و Top-offset متزامنين لحظياً"
+puts "     • ModelObserver يرصد أي تعديل خارجي"
+puts "     • rebuild_all_beams دقيق بدون sync داخلي"
 puts "═" * 90
