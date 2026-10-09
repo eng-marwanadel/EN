@@ -1,18 +1,18 @@
 # encoding: UTF-8
 # MHD Room Builder v4.0 - Smart Edit Engine
 # SketchUp Ruby Plugin
-# Fixed: Beam-Wall Alignment (beam back flush against interior wall face)
+# ✅ BEAM FIX: كمر flush مع الوش الداخلي للحائط
 
 require 'sketchup.rb'
 require 'json'
 require 'tmpdir'
 require 'zlib'
 begin
-  require File.join(__dir__, 'language', 'language_engine')
+require File.join(__dir__, 'language', 'language_engine')
 rescue LoadError
 end
 begin
-  require 'securerandom'
+require 'securerandom'
 rescue LoadError
 end
 
@@ -2117,6 +2117,7 @@ def save_beams(room_group, beams)
   room_group.set_attribute(DICT, 'beams_json', beams.to_json)
 end
 
+# ✅ wall_info محدَّث: يرجّع P1, P2, P3, P4 + inward
 def wall_info(wall)
   return nil unless wall && wall.valid?
   p1s = wall.get_attribute(DICT, 'P1').to_s
@@ -2132,6 +2133,15 @@ def wall_info(wall)
   p2 = Geom::Point3d.new(b[0], b[1], b[2])
   p3 = c.length >= 3 ? Geom::Point3d.new(c[0], c[1], c[2]) : nil
   p4 = d.length >= 3 ? Geom::Point3d.new(d[0], d[1], d[2]) : nil
+
+  # حساب اتجاه inward (ناحية الغرفة) من P1→P2
+  dir = p1.vector_to(p2)
+  dir.normalize! if dir.length > 0.001
+  outward = dir.cross(Z_AXIS)
+  outward.normalize! if outward.length > 0.001
+  inward = Geom::Vector3d.new(-outward.x, -outward.y, 0)
+  inward.normalize! if inward.length > 0.001
+
   {
     'p1' => p1,
     'p2' => p2,
@@ -2143,7 +2153,8 @@ def wall_info(wall)
     'number' => wall.get_attribute(DICT, 'رقم الحائط').to_i,
     'name' => wall.name.to_s,
     'room_name' => wall.get_attribute(DICT, 'اسم الغرفة').to_s,
-    'room_uuid' => wall.get_attribute(DICT, 'Room_UUID').to_s
+    'room_uuid' => wall.get_attribute(DICT, 'Room_UUID').to_s,
+    'inward' => inward
   }
 end
 
@@ -2191,10 +2202,10 @@ def delete_room_beams(room_group)
 end
 
 # ============================================================
-# ✅ build_single_beam — النواة المُصلحة
+# ✅ build_single_beam — الإصلاح الرئيسي
 # ------------------------------------------------------------
-# الكمر يتمركز على الوش الداخلي (P1–P2) للحائط،
-# ويمتد جوّه الغرفة بعمقه الكامل (depth_cm).
+# الكمر يتمركز ظهره على خط P1–P2 (الوش الداخلي للحائط)،
+# ويمتد بعمقه الكامل جوّه الغرفة باتجاه inward.
 # بهذا لا يدخل أي جزء من الكمر داخل الحائط.
 # ============================================================
 def build_single_beam(model, room_group, wall, spec)
@@ -2220,32 +2231,26 @@ def build_single_beam(model, room_group, wall, spec)
 
   p1 = info['p1']
   p2 = info['p2']
+  inward = info['inward']
 
-  # الاتجاه من P1 إلى P2
-  d = p1.vector_to(p2)
-  length = d.length
-  raise 'طول الحائط غير صالح لإنشاء الكمر' if length <= 0.1.mm
-  d.normalize!
-
-  # ✅ الاتجاه العمودي على الحائط (خارج الغرفة) — نفس منطق compute_outward_pts
-  outward = d.cross(Z_AXIS)
-  return nil if outward.length < 0.0001
-  outward.normalize!
-
-  # ✅ اتجاه "الداخل" للغرفة هو عكس الاتجاه الخارجي
-  inward = Geom::Vector3d.new(-outward.x, -outward.y, 0)
-  inward.normalize!
+  # تأكيد إن اتجاه inward موجود
+  unless inward
+    d = p1.vector_to(p2)
+    d.normalize! if d.length > 0.001
+    outward = d.cross(Z_AXIS)
+    outward.normalize! if outward.length > 0.001
+    inward = Geom::Vector3d.new(-outward.x, -outward.y, 0)
+    inward.normalize! if inward.length > 0.001
+  end
 
   base_z = p1.z + elevation_cm.cm
   depth_actual = depth_cm.cm
 
-  # ✅ النقاط الأربع:
-  # ظهر الكمر عند P1–P2 (الوش الداخلي للحائط)
-  # ووشّ الكمر الأمامي جوّه الغرفة بمقدار depth_cm
-  a   = p1.clone                              # ظهر يسار
-  b   = p2.clone                              # ظهر يمين
-  c   = p2.offset(inward, depth_actual)       # وشّ يمين
-  dpt = p1.offset(inward, depth_actual)       # وشّ يسار
+  # ✅ ظهر الكمر عند P1–P2، والوش الأمامي يمتد inward بمقدار depth
+  a   = p1.clone                              # ظهر يسار (الوش الداخلي)
+  b   = p2.clone                              # ظهر يمين (الوش الداخلي)
+  c   = p2.offset(inward, depth_actual)       # وشّ يمين (جوّه الغرفة)
+  dpt = p1.offset(inward, depth_actual)       # وشّ يسار (جوّه الغرفة)
 
   # توحيد Z
   a.z   = base_z
@@ -2415,7 +2420,7 @@ button{height:42px;border:0;border-radius:9px;font-size:14px;font-weight:900;cur
     <div class="row"><label>ارتفاع الكمر سم</label><input id="height" type="number" min="0.1" step="0.1" value="#{defaults['height_cm']}"></div>
     <div class="row"><label>عمق الكمر سم</label><input id="depth" type="number" min="0.1" step="0.1" value="#{defaults['depth_cm']}"></div>
     <div class="row"><label>ارتفاع من الأرض سم</label><input id="elevation" type="number" min="0" step="0.1" value="#{defaults['elevation_cm']}"></div>
-    <div class="hint">الكمر يمتد تلقائياً بطول الحائط بالكامل، وظهره ملزوق في الوش الداخلي للحائط، ووشّه داخل الغرفة بعمق الكمر.</div>
+    <div class="hint">الكمر يمتد تلقائياً بطول الحائط بالكامل، وظهره ملزوق في الوش الداخلي، ووشّه داخل الغرفة بعمق الكمر. يُعاد بناؤه تلقائياً عند تعديل ارتفاع أو سمك الحائط.</div>
   </div>
   <div class="footer">
     <button class="save" onclick="submitData()">#{is_beam ? 'حفظ التعديل' : 'إضافة الكمر'}</button>
