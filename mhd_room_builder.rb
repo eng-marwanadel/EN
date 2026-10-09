@@ -1,7 +1,8 @@
 # encoding: UTF-8
-# MHD Room Builder v4.1 - Smart Edit Engine (Fixed)
-# SketchUp Ruby Plugin
-# ✅ FIXED: Beam Flush, Floor Material, Shatra Cancellation, Preview State
+# ============================================================
+# MHD Room Builder v4.2 - Full Code with Beam Follow-Ceiling
+# الكود الكامل بعد إضافة ميزة "يتبع ارتفاع السقف" للكمر
+# ============================================================
 
 require 'sketchup.rb'
 require 'json'
@@ -312,9 +313,7 @@ module MHD_RoomBuilder_Context
     mat
   end
 
-  def add_vertical_gradient_glow(model, parent_ents, room_name, path_pts,
-                                  source_z, glow_size, color, intensity, attrs,
-                                  direction = :down)
+  def add_vertical_gradient_glow(model, parent_ents, room_name, path_pts, source_z, glow_size, color, intensity, attrs, direction = :down)
     return nil unless polygon_usable?(path_pts) && glow_size > 0 && intensity > 0
     material = gradient_material(model, color, intensity)
     return nil unless material && material.texture
@@ -332,10 +331,8 @@ module MHD_RoomBuilder_Context
       p4 = Geom::Point3d.new(a.x, a.y, finish_z)
       face = definition.entities.add_face(p1, p2, p3, p4)
       next unless face
-      uv1 = Geom::Point3d.new(0, 0, 1)
-      uv2 = Geom::Point3d.new(1, 0, 1)
-      uv3 = Geom::Point3d.new(1, 0.996, 1)
-      uv4 = Geom::Point3d.new(0, 0.996, 1)
+      uv1 = Geom::Point3d.new(0, 0, 1); uv2 = Geom::Point3d.new(1, 0, 1)
+      uv3 = Geom::Point3d.new(1, 0.996, 1); uv4 = Geom::Point3d.new(0, 0.996, 1)
       mapping = [p1, uv1, p2, uv2, p3, uv3, p4, uv4]
       begin
         face.position_material(material, mapping, true)
@@ -344,17 +341,9 @@ module MHD_RoomBuilder_Context
         face.material = material
         face.back_material = material
       end
-      face.edges.each do |edge|
-        edge.hidden = true
-        edge.soft = true
-        edge.smooth = true
-      end
+      face.edges.each { |edge| edge.hidden = true; edge.soft = true; edge.smooth = true }
     end
-    definition.entities.grep(Sketchup::Edge).each do |edge|
-      edge.hidden = true
-      edge.soft = true
-      edge.smooth = true
-    end
+    definition.entities.grep(Sketchup::Edge).each { |edge| edge.hidden = true; edge.soft = true; edge.smooth = true }
     instance = parent_ents.add_instance(definition, Geom::Transformation.new)
     instance.name = ts('تأثير الإضاءة المتدرج')
     instance.layer = model.layers[0]
@@ -362,9 +351,7 @@ module MHD_RoomBuilder_Context
     instance
   end
 
-  def add_horizontal_gradient_glow(model, parent_ents, room_name, source_pts,
-                                    z, glow_size, color, intensity, attrs,
-                                    spread_direction = :inward)
+  def add_horizontal_gradient_glow(model, parent_ents, room_name, source_pts, z, glow_size, color, intensity, attrs, spread_direction = :inward)
     return nil unless polygon_usable?(source_pts) && glow_size > 0 && intensity > 0
     offset_distance = spread_direction == :outward ? -glow_size : glow_size
     fade_pts = offset_polygon(source_pts, offset_distance)
@@ -374,22 +361,15 @@ module MHD_RoomBuilder_Context
     definition = model.definitions.add("تأثير_يد_مخفي_أفقي_#{Time.now.to_i}_#{rand(99999)}")
     count = source_pts.length
     count.times do |i|
-      a = source_pts[i]
-      b = source_pts[(i + 1) % count]
-      c = fade_pts[(i + 1) % count]
-      d = fade_pts[i]
+      a = source_pts[i]; b = source_pts[(i + 1) % count]
+      c = fade_pts[(i + 1) % count]; d = fade_pts[i]
       p1 = Geom::Point3d.new(a.x, a.y, z + 0.4.mm)
       p2 = Geom::Point3d.new(b.x, b.y, z + 0.4.mm)
       p3 = Geom::Point3d.new(c.x, c.y, z + 0.4.mm)
       p4 = Geom::Point3d.new(d.x, d.y, z + 0.4.mm)
       face = definition.entities.add_face(p1, p2, p3, p4)
       next unless face
-      mapping = [
-        p1, Geom::Point3d.new(0, 0, 1),
-        p2, Geom::Point3d.new(1, 0, 1),
-        p3, Geom::Point3d.new(1, 0.996, 1),
-        p4, Geom::Point3d.new(0, 0.996, 1)
-      ]
+      mapping = [p1, Geom::Point3d.new(0, 0, 1), p2, Geom::Point3d.new(1, 0, 1), p3, Geom::Point3d.new(1, 0.996, 1), p4, Geom::Point3d.new(0, 0.996, 1)]
       begin
         face.position_material(material, mapping, true)
         face.position_material(material, mapping, false)
@@ -397,17 +377,9 @@ module MHD_RoomBuilder_Context
         face.material = material
         face.back_material = material
       end
-      face.edges.each do |edge|
-        edge.hidden = true
-        edge.soft = true
-        edge.smooth = true
-      end
+      face.edges.each { |edge| edge.hidden = true; edge.soft = true; edge.smooth = true }
     end
-    definition.entities.grep(Sketchup::Edge).each do |edge|
-      edge.hidden = true
-      edge.soft = true
-      edge.smooth = true
-    end
+    definition.entities.grep(Sketchup::Edge).each { |edge| edge.hidden = true; edge.soft = true; edge.smooth = true }
     instance = parent_ents.add_instance(definition, Geom::Transformation.new)
     instance.name = ts('تأثير إضاءة اليد الأفقي')
     instance.layer = model.layers[0]
@@ -497,7 +469,7 @@ module MHD_RoomBuilder_Context
     end
   end
 
-  # ✅ FIXED: Capture floor material from TOP face correctly
+  # ✅ Capture floor material from TOP face correctly
   def capture_floor_material(room_group)
     room_group.entities.to_a.each do |e|
       next unless e.valid?
@@ -512,7 +484,7 @@ module MHD_RoomBuilder_Context
     nil
   end
 
-  # ✅ FIXED: Capture floor material info from TOP face correctly
+  # ✅ Capture floor material info from TOP face correctly
   def capture_floor_material_info(room_group)
     room_group.entities.to_a.each do |e|
       next unless e.valid?
@@ -522,13 +494,11 @@ module MHD_RoomBuilder_Context
       top_face = e.definition.entities.grep(Sketchup::Face).find do |f|
         f.valid? && f.normal.z > 0.9
       end
-
       next unless top_face
 
       front = top_face.material
       back  = top_face.back_material
 
-      # Fallback: if top face has no material, check bottom face
       unless front || back
         bottom_face = e.definition.entities.grep(Sketchup::Face).find { |f| f.valid? && f.normal.z < -0.9 }
         if bottom_face
@@ -584,9 +554,7 @@ module MHD_RoomBuilder_Context
         inst.make_unique
         definition = inst.definition
       end
-      top_face = definition.entities.grep(Sketchup::Face).find do |f|
-        f.valid? && f.normal.z > 0.9
-      end
+      top_face = definition.entities.grep(Sketchup::Face).find { |f| f.valid? && f.normal.z > 0.9 }
       next unless top_face
       begin
         top_face.pushpull(delta, false)
@@ -607,8 +575,7 @@ module MHD_RoomBuilder_Context
     end
   end
 
-  def rebuild_room_walls(room_group, pts, outward_pts, wall_h, wall_t,
-                         wall_h_cm, wall_t_cm, room_name, room_uuid)
+  def rebuild_room_walls(room_group, pts, outward_pts, wall_h, wall_t, wall_h_cm, wall_t_cm, room_name, room_uuid)
     model = Sketchup.active_model
     count = pts.length
     stamp = Time.now.to_i
@@ -656,7 +623,6 @@ module MHD_RoomBuilder_Context
     floor_face.reverse! if floor_face.normal.z < 0
     floor_face.pushpull(-floor_t)
 
-    # Ensure top and bottom faces have correct normals
     floor_def.entities.grep(Sketchup::Face).each do |face|
       next unless face.valid?
       next unless face.normal.z.abs > 0.9
@@ -705,6 +671,29 @@ module MHD_RoomBuilder_Context
     floor_inst
   end
 
+  # ═══════════════════════════════════════════════════════════════════
+  # ✅ NEW: Recalculate beam elevations when wall height changes
+  # ═══════════════════════════════════════════════════════════════════
+  def recalculate_beam_elevations(room_group, old_wall_h_cm, new_wall_h_cm)
+    beams = beams_from_room(room_group)
+    return if beams.empty?
+    delta = (new_wall_h_cm - old_wall_h_cm).to_f
+    return if delta.abs < 0.001
+    changed = false
+    beams.each do |spec|
+      next unless spec['follow_ceiling'] == true || spec['follow_ceiling'].to_s == 'true'
+      height_cm = spec['height_cm'].to_f
+      top_offset = spec['top_offset_cm'].to_f
+      new_elevation = new_wall_h_cm - top_offset - height_cm
+      new_elevation = [[new_elevation, 0.0].max, [new_wall_h_cm - height_cm, 0.0].max].min
+      if (spec['elevation_cm'].to_f - new_elevation).abs > 0.001
+        spec['elevation_cm'] = new_elevation.round(2)
+        changed = true
+      end
+    end
+    save_beams(room_group, beams) if changed
+  end
+
   def apply_smart_room_update(room_group, new_data)
     old_data = build_data_from_group(room_group) || {}
     pts = room_pts_from_group(room_group)
@@ -744,6 +733,9 @@ module MHD_RoomBuilder_Context
       ceiling_needs_rebuild = ceiling_toggle || ceiling_t_changed || ceiling_visual || light_changed
 
       floor_mat_info = capture_floor_material_info(room_group)
+
+      # ✅ Update beam elevations if wall height changed
+      recalculate_beam_elevations(room_group, wall_h_old, wall_h_new) if wall_h_changed
 
       if name_changed
         begin
@@ -853,13 +845,9 @@ module MHD_RoomBuilder_Context
       outward = compute_outward_pts(pts, wall_t_cm.cm)
       rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid, floor_mat_info) if floor_on && floor_t_cm > 0
       if ceiling_on && ceil_t_cm > 0
-        build_ceiling(model, room_group.entities, name, room_uuid,
-                      outward, pts,
-                      wall_h_cm.cm, ceil_t_cm.cm, ceil_t_cm, new_data)
+        build_ceiling(model, room_group.entities, name, room_uuid, outward, pts, wall_h_cm.cm, ceil_t_cm.cm, ceil_t_cm, new_data)
       end
-      rebuild_room_walls(room_group, pts, outward,
-                         wall_h_cm.cm, wall_t_cm.cm,
-                         wall_h_cm, wall_t_cm, name, room_uuid)
+      rebuild_room_walls(room_group, pts, outward, wall_h_cm.cm, wall_t_cm.cm, wall_h_cm, wall_t_cm, name, room_uuid)
       rebuild_all_beams(room_group) if respond_to?(:rebuild_all_beams)
       room_group.name = name
       room_group.layer = tag(model, name)
@@ -945,8 +933,7 @@ module MHD_RoomBuilder_Context
 
   def find_room_group(entity)
     return nil unless entity && entity.respond_to?(:valid?) && entity.valid?
-    if entity.is_a?(Sketchup::Group) &&
-       entity.get_attribute(DICT, 'النوع') == 'غرفة'
+    if entity.is_a?(Sketchup::Group) && entity.get_attribute(DICT, 'النوع') == 'غرفة'
       return entity
     end
     uuid_v = ''
@@ -956,8 +943,7 @@ module MHD_RoomBuilder_Context
       begin
         u = current.get_attribute(DICT, 'Room_UUID').to_s
         uuid_v = u unless u.empty?
-        if current.is_a?(Sketchup::Group) &&
-           current.get_attribute(DICT, 'النوع') == 'غرفة'
+        if current.is_a?(Sketchup::Group) && current.get_attribute(DICT, 'النوع') == 'غرفة'
           return current
         end
         parent_ents = current.parent rescue nil
@@ -1023,14 +1009,10 @@ module MHD_RoomBuilder_Context
   def orthogonal_quadrilateral?(pts, tol_deg = 3.0)
     return false unless pts.is_a?(Array) && pts.length == 4
     4.times do |i|
-      a = pts[i]
-      b = pts[(i + 1) % 4]
-      c = pts[(i + 2) % 4]
-      u = a.vector_to(b)
-      v = b.vector_to(c)
+      a = pts[i]; b = pts[(i + 1) % 4]; c = pts[(i + 2) % 4]
+      u = a.vector_to(b); v = b.vector_to(c)
       return false if u.length <= 0.1.mm || v.length <= 0.1.mm
-      u.normalize!
-      v.normalize!
+      u.normalize!; v.normalize!
       dot = [[u.dot(v), -1.0].max, 1.0].min
       angle = Math.acos(dot) * 180.0 / Math::PI
       return false if (angle - 90.0).abs > tol_deg
@@ -1045,24 +1027,20 @@ module MHD_RoomBuilder_Context
     return nil unless pts && pts.length >= 3
     idx = wall_number.to_i - 1
     return nil if idx < 0 || idx >= pts.length
-
     mode = mode.to_s
 
     if orthogonal_quadrilateral?(pts)
       j = (idx + 1) % 4
       opp_j = (idx + 2) % 4
       opp_i = (idx + 3) % 4
-      p1 = pts[idx]
-      p2 = pts[j]
+      p1 = pts[idx]; p2 = pts[j]
       vec = p1.vector_to(p2)
       return nil if vec.length <= 0.1.mm
-      dir = vec.clone
-      dir.normalize!
+      dir = vec.clone; dir.normalize!
       target = new_length_cm.to_f.cm
       return nil if target <= 0.1.cm
       old_len = vec.length
       delta = target - old_len
-
       result = pts.map { |p| p.clone }
 
       if mode == 'single'
@@ -1106,7 +1084,6 @@ module MHD_RoomBuilder_Context
   def remove_legacy_source_floor_geometry(old_pts)
     model = Sketchup.active_model
     return unless old_pts && old_pts.length >= 3
-
     matches_loop = lambda do |face|
       verts = face.outer_loop.vertices.map(&:position)
       return false unless verts.length == old_pts.length
@@ -1115,8 +1092,7 @@ module MHD_RoomBuilder_Context
         ok = true
         n.times do |k|
           if verts[k].distance(old_pts[(k + shift) % n]) > 0.01.cm
-            ok = false
-            break
+            ok = false; break
           end
         end
         return true if ok
@@ -1125,18 +1101,12 @@ module MHD_RoomBuilder_Context
     rescue
       false
     end
-
     model.entities.to_a.grep(Sketchup::Face).each do |face|
       next unless face.valid?
       next unless matches_loop.call(face)
       edges = face.edges.dup
       face.erase!
-      edges.each do |edge|
-        begin
-          edge.erase! if edge.valid? && edge.faces.empty?
-        rescue
-        end
-      end
+      edges.each { |edge| begin; edge.erase! if edge.valid? && edge.faces.empty?; rescue; end }
     end
   rescue
     nil
@@ -1166,14 +1136,10 @@ module MHD_RoomBuilder_Context
     return nil unless pts && pts.length >= 3
     i = corner_idx.to_i
     return nil if i < 0 || i >= pts.length
-    prev = pts[(i - 1) % pts.length]
-    cur = pts[i]
-    nxt = pts[(i + 1) % pts.length]
-    u = cur.vector_to(prev)
-    v = cur.vector_to(nxt)
+    prev = pts[(i - 1) % pts.length]; cur = pts[i]; nxt = pts[(i + 1) % pts.length]
+    u = cur.vector_to(prev); v = cur.vector_to(nxt)
     return nil if u.length <= 0.1.mm || v.length <= 0.1.mm
-    u.normalize!
-    v.normalize!
+    u.normalize!; v.normalize!
     dot = [[u.dot(v), -1.0].max, 1.0].min
     Math.acos(dot) * 180.0 / Math::PI
   rescue
@@ -1186,15 +1152,12 @@ module MHD_RoomBuilder_Context
     idx = wall_number.to_i - 1
     return nil if idx < 0 || idx >= pts.length
     j = (idx + 1) % pts.length
-    p1 = pts[idx]
-    p2 = pts[j]
+    p1 = pts[idx]; p2 = pts[j]
     vec = p1.vector_to(p2)
     return nil if vec.length <= 0.1.mm
-    dir = vec.clone
-    dir.normalize!
+    dir = vec.clone; dir.normalize!
     target = new_length_cm.to_f.cm
     return nil if target <= 0.1.cm
-
     case anchor.to_s
     when 'end'
       pts[idx] = p2.offset(dir.reverse, target)
@@ -1211,7 +1174,6 @@ module MHD_RoomBuilder_Context
     nil
   end
 
-  # ✅ FIXED: Synchronize room geometry & update shatra original points
   def synchronize_room_geometry(room_group, pts, room_data)
     model = Sketchup.active_model
     room_uuid = room_group.get_attribute(DICT, 'UUID').to_s
@@ -1228,10 +1190,16 @@ module MHD_RoomBuilder_Context
 
     raise 'نقاط الغرفة غير صالحة' unless pts.is_a?(Array) && pts.length >= 3 && polygon_valid_for_wall_edit?(pts)
 
+    old_wall_h = room_group.get_attribute(DICT, 'ارتفاع الحائط سم').to_f
+    old_wall_h = wall_h_cm if old_wall_h <= 0
+
     outward = compute_outward_pts(pts, wall_t_cm.cm)
     raise 'تعذر حساب حدود الحوائط' unless outward && outward.length == pts.length
 
     floor_mat_info = capture_floor_material_info(room_group)
+
+    # ✅ Recalculate beam elevations if wall height changed
+    recalculate_beam_elevations(room_group, old_wall_h, wall_h_cm) if (old_wall_h - wall_h_cm).abs > 0.001
 
     delete_room_parts(room_group, 'حائط')
     delete_room_parts(room_group, 'أرضية')
@@ -1239,17 +1207,14 @@ module MHD_RoomBuilder_Context
     delete_room_beams(room_group) if respond_to?(:delete_room_beams)
     delete_room_shatras(room_group) if respond_to?(:delete_room_shatras)
 
-    rebuild_room_walls(room_group, pts, outward, wall_h_cm.cm, wall_t_cm.cm,
-                       wall_h_cm, wall_t_cm, name, room_uuid)
+    rebuild_room_walls(room_group, pts, outward, wall_h_cm.cm, wall_t_cm.cm, wall_h_cm, wall_t_cm, name, room_uuid)
 
     rebuild_room_floor(room_group, outward, floor_t_cm.cm, floor_t_cm, name, room_uuid, floor_mat_info) if floor_on && floor_t_cm > 0
 
     if ceiling_on && ceil_t_cm > 0
-      build_ceiling(model, room_group.entities, name, room_uuid, outward, pts,
-                    wall_h_cm.cm, ceil_t_cm.cm, ceil_t_cm, data)
+      build_ceiling(model, room_group.entities, name, room_uuid, outward, pts, wall_h_cm.cm, ceil_t_cm.cm, ceil_t_cm, data)
     end
 
-    # ✅ FIX: Update shatra original_corner_pts to match the new geometry
     shatras = shatras_from_room(room_group)
     unless shatras.empty?
       shatras.each do |s|
@@ -1295,13 +1260,11 @@ module MHD_RoomBuilder_Context
       UI.messagebox(ts('لا توجد بيانات محفوظة للغرفة.'))
       return false
     end
-
     rec = wall_record(room_group, wall_number)
     unless rec
       UI.messagebox(ts('تعذر قراءة الحائط المحدد.'))
       return false
     end
-
     new_length = data['length_cm'].to_f
     new_height = data['height_cm'].to_f
     new_thickness = data['thickness_cm'].to_f
@@ -1310,7 +1273,6 @@ module MHD_RoomBuilder_Context
     edit_mode = 'auto' if edit_mode.empty?
     new_name = data['name'].to_s.strip
     new_name = rec['name'] if new_name.empty?
-
     if new_length <= 1.0
       UI.messagebox(ts('طول الحائط يجب أن يكون أكبر من 1 سم.'))
       return false
@@ -1319,25 +1281,21 @@ module MHD_RoomBuilder_Context
       UI.messagebox(ts('ارتفاع وسمك الحائط يجب أن يكونا أكبر من صفر.'))
       return false
     end
-
     room_data = room_data.dup
     room_data['wall_h'] = new_height
     room_data['wall_t'] = new_thickness
-
     old_pts = room_pts_from_group(room_group)
     new_pts = build_smart_wall_edit_points(room_group, wall_number, new_length, anchor, edit_mode)
     unless new_pts && polygon_valid_for_wall_edit?(new_pts)
       UI.messagebox(ts('القيمة الجديدة أدت إلى شكل غرفة غير صالح. جرّب طولاً أكبر أو نقطة تثبيت مختلفة.'))
       return false
     end
-
     model = Sketchup.active_model
     model.start_operation('MHD Parametric Wall Edit', true)
     begin
       old_wall_name = rec['name']
       remove_legacy_source_floor_geometry(old_pts)
       rebuild_room_after_wall_edit(room_group, new_pts, room_data)
-
       if new_name != old_wall_name
         wall = find_wall_in_room(room_group, wall_number)
         if wall && wall.valid?
@@ -1348,7 +1306,6 @@ module MHD_RoomBuilder_Context
         end
         rename_beam_tags_for_room(room_group) if respond_to?(:rename_beam_tags_for_room)
       end
-
       model.commit_operation
       UI.messagebox("✅ #{ts('تم تعديل الحائط ديناميكياً')}\n#{ts('الطول')}: #{new_length.round(2)} سم")
       true
@@ -1381,20 +1338,14 @@ module MHD_RoomBuilder_Context
       UI.messagebox(ts('تعذر قراءة الحائط المحدد.'))
       return
     end
-
     v = wall_edit_dialog_values(rec)
     dlg = UI::HtmlDialog.new(
       dialog_title: "#{ts('تعديل الحائط')} - MHDESIGN",
       preferences_key: PREF_KEY + '_WALL_EDIT',
-      scrollable: true,
-      resizable: true,
-      width: 400,
-      height: 640,
-      min_width: 340,
-      min_height: 480,
+      scrollable: true, resizable: true,
+      width: 400, height: 640, min_width: 340, min_height: 480,
       style: UI::HtmlDialog::STYLE_DIALOG
     )
-
     safe_name = v['name'].to_s.gsub('&','&amp;').gsub('"','&quot;').gsub('<','&lt;').gsub('>','&gt;')
     html = <<-HTML
 <!DOCTYPE html>
@@ -1407,7 +1358,6 @@ html,body{margin:0;padding:0;height:100%;width:100%;background:#07131d;color:#ea
 ::-webkit-scrollbar{width:9px}
 ::-webkit-scrollbar-track{background:#07131d}
 ::-webkit-scrollbar-thumb{background:#1d3444;border-radius:20px;border:2px solid #07131d}
-::-webkit-scrollbar-thumb:hover{background:#2a4a5f}
 .app{height:100vh;display:flex;flex-direction:column;background:#07131d}
 .scroll{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;padding:14px 14px 6px;scroll-behavior:smooth}
 .title{font-size:21px;font-weight:900;text-align:center;margin-bottom:5px}
@@ -1421,14 +1371,12 @@ input:focus,select:focus{outline:2px solid #39a245;background:#0d1b25}
 .length-wrap{display:grid;grid-template-columns:44px 1fr 44px;gap:5px;align-items:center}
 .step{height:36px;border:1px solid #294457;background:#0f2433;color:#fff;border-radius:7px;font-size:18px;font-weight:900;cursor:pointer;line-height:1}
 .step:hover{background:#153348}
-.step:active{transform:scale(0.97)}
 .range{width:100%;height:28px;margin-top:6px;accent-color:#39a245}
 .big{font-size:20px;font-weight:900;text-align:center;margin:4px 0 12px;color:#4de37a;letter-spacing:.5px}
 .hint{font-size:11px;color:#8eabbc;line-height:1.6;margin-top:7px}
 .footer{flex:0 0 auto;display:flex;gap:8px;padding:10px 14px;border-top:1px solid #1c3342;background:#07131d;box-shadow:0 -4px 12px rgba(0,0,0,.35)}
 .btn{flex:1;height:44px;border:0;border-radius:9px;font-weight:900;font-size:14px;cursor:pointer;transition:filter .15s}
 .btn:hover{filter:brightness(1.08)}
-.btn:active{transform:scale(0.98)}
 .save{background:#4de37a;color:#061923}
 .cancel{background:#0b1b27;color:#fff;border:1px solid #294457}
 </style>
@@ -1451,7 +1399,7 @@ input:focus,select:focus{outline:2px solid #39a245;background:#0d1b25}
 <div class="row"><label>سمك الحائط سم</label><input id="thickness" type="number" step="0.1" min="0.1" value="#{v['thickness_cm']}"></div>
 <div class="row"><label>اسم الحائط</label><input id="name" type="text" value="#{safe_name}"></div>
 </div>
-<div class="card"><b>⚡ تحديث ديناميكي</b><div class="hint">بعد الحفظ يتم إعادة حساب شكل الغرفة، الأرضية، السقف، والحوائط. الكمرات المرتبطة بالحائط يعاد بناؤها تلقائياً على الشكل الجديد.</div></div>
+<div class="card"><b>⚡ تحديث ديناميكي</b><div class="hint">بعد الحفظ يتم إعادة حساب شكل الغرفة، الأرضية، السقف، والحوائط. الكمرات المفعّل عليها "يتبع السقف" ستتحرك تلقائياً.</div></div>
 </div>
 <div class="footer"><button class="btn save" onclick="submitData()">💾 تطبيق التعديل</button><button class="btn cancel" onclick="sketchup.cancel()">إغلاق</button></div>
 </div>
@@ -1530,14 +1478,10 @@ updateBig();
   def shatra_corner_index(room_group, click_point)
     pts = room_pts_from_group(room_group)
     return nil unless pts && pts.length >= 3 && click_point
-    idx = nil
-    best = 1.0e99
+    idx = nil; best = 1.0e99
     pts.each_with_index do |p, i|
       d = p.distance(click_point)
-      if d < best
-        best = d
-        idx = i
-      end
+      if d < best; best = d; idx = i; end
     end
     idx
   rescue
@@ -1545,9 +1489,7 @@ updateBig();
   end
 
   def shatra_angle_from_sides(a_cm, b_cm, diagonal_cm)
-    a = a_cm.to_f
-    b = b_cm.to_f
-    c = diagonal_cm.to_f
+    a = a_cm.to_f; b = b_cm.to_f; c = diagonal_cm.to_f
     return nil if a <= 0 || b <= 0 || c <= 0
     cosv = (a*a + b*b - c*c) / (2.0*a*b)
     return nil if cosv < -1.000001 || cosv > 1.000001
@@ -1557,36 +1499,23 @@ updateBig();
 
   def shatra_adjust_corner_points(pts, corner_idx, desired_angle_deg)
     return nil unless pts.is_a?(Array) && pts.length >= 3
-    i = corner_idx.to_i
-    n = pts.length
+    i = corner_idx.to_i; n = pts.length
     return nil if i < 0 || i >= n
-    prev_i = (i - 1) % n
-    next_i = (i + 1) % n
-    corner = pts[i]
-    prev = pts[prev_i]
-    nxt  = pts[next_i]
-
-    u = corner.vector_to(prev)
-    v = corner.vector_to(nxt)
-    lu = u.length
-    lv = v.length
+    prev_i = (i - 1) % n; next_i = (i + 1) % n
+    corner = pts[i]; prev = pts[prev_i]; nxt = pts[next_i]
+    u = corner.vector_to(prev); v = corner.vector_to(nxt)
+    lu = u.length; lv = v.length
     return nil if lu <= 0.1.mm || lv <= 0.1.mm
-
-    u.normalize!
-    v.normalize!
+    u.normalize!; v.normalize!
     current_angle = Math.acos([[u.dot(v), -1.0].max, 1.0].min)
     desired = desired_angle_deg.to_f * Math::PI / 180.0
     return nil if desired <= 0.001 || desired >= Math::PI - 0.001
-
     delta = desired - current_angle
     cross_z = u.cross(v).z.to_f
     sign = cross_z >= 0 ? 1.0 : -1.0
-
     r1 = Geom::Transformation.rotation(corner, Z_AXIS, -sign * delta / 2.0)
     r2 = Geom::Transformation.rotation(corner, Z_AXIS,  sign * delta / 2.0)
-    new_u = u.transform(r1)
-    new_v = v.transform(r2)
-
+    new_u = u.transform(r1); new_v = v.transform(r2)
     result = pts.map { |p| p.clone }
     result[prev_i] = corner.offset(new_u, lu)
     result[next_i] = corner.offset(new_v, lv)
@@ -1598,51 +1527,30 @@ updateBig();
   def build_shatra_guide(room_group, shatra)
     pts = room_pts_from_group(room_group)
     return nil unless pts && pts.length >= 3
-
     i = shatra['corner_index'].to_i
     return nil if i < 0 || i >= pts.length
-    prev_i = (i - 1) % pts.length
-    next_i = (i + 1) % pts.length
-
-    corner = pts[i]
-    p_prev = pts[prev_i]
-    p_next = pts[next_i]
-
-    a_len = shatra['a_cm'].to_f.cm
-    b_len = shatra['b_cm'].to_f.cm
+    prev_i = (i - 1) % pts.length; next_i = (i + 1) % pts.length
+    corner = pts[i]; p_prev = pts[prev_i]; p_next = pts[next_i]
+    a_len = shatra['a_cm'].to_f.cm; b_len = shatra['b_cm'].to_f.cm
     return nil if a_len <= 0 || b_len <= 0
-
-    va = corner.vector_to(p_prev)
-    vb = corner.vector_to(p_next)
+    va = corner.vector_to(p_prev); vb = corner.vector_to(p_next)
     return nil if va.length <= 0.1.mm || vb.length <= 0.1.mm
-    va.normalize!
-    vb.normalize!
-
+    va.normalize!; vb.normalize!
     a_len = [a_len, corner.distance(p_prev)].min
     b_len = [b_len, corner.distance(p_next)].min
-
-    pa = corner.offset(va, a_len)
-    pb = corner.offset(vb, b_len)
+    pa = corner.offset(va, a_len); pb = corner.offset(vb, b_len)
     z = [corner.z, p_prev.z, p_next.z].max + 0.8.cm
-    pa.z = z
-    pb.z = z
-    c = corner.clone
-    c.z = z
-
+    pa.z = z; pb.z = z
+    c = corner.clone; c.z = z
     grp = room_group.entities.add_group
     grp.name = "شطرة | زاوية #{format('%.2f', shatra['angle_deg'].to_f)}°"
     grp.layer = tag(Sketchup.active_model, 'MHD | شطرة الحائط')
-
     e1 = grp.entities.add_line(c, pa)
     e2 = grp.entities.add_line(c, pb)
     diag = grp.entities.add_line(pa, pb)
     [e1, e2, diag].compact.each do |edge|
-      begin
-        edge.soft = true if edge.respond_to?(:soft=)
-      rescue
-      end
+      begin; edge.soft = true if edge.respond_to?(:soft=); rescue; end
     end
-
     set_attrs(grp, {
       'UUID' => (shatra['uuid'].to_s.empty? ? uuid : shatra['uuid'].to_s),
       'Room_UUID' => room_group.get_attribute(DICT, 'UUID').to_s,
@@ -1669,7 +1577,6 @@ updateBig();
   def preview_snapshot(room_group)
     uuid_v = room_group.get_attribute(DICT, 'UUID').to_s
     return @preview_states[uuid_v] if @preview_states && @preview_states[uuid_v]
-
     pts = room_pts_from_group(room_group) || []
     floor_mat = (capture_floor_material(room_group) rescue nil)
     snapshot = {
@@ -1688,7 +1595,6 @@ updateBig();
     return false unless @preview_states && @preview_states[uuid_v]
     snapshot = @preview_states.delete(uuid_v)
     return false unless snapshot
-
     model = Sketchup.active_model
     model.start_operation('MHD Restore Preview', true)
     begin
@@ -1719,33 +1625,24 @@ updateBig();
     @preview_states && @preview_states.key?(uuid_v)
   end
 
-  # ✅ FIXED: Apply shatra calibration & preserve original points correctly
   def apply_shatra_calibration(room_group, corner_idx, data, mode = :apply)
     return false unless room_group && room_group.valid?
-    a = data['a_cm'].to_f
-    b = data['b_cm'].to_f
-    diag = data['diagonal_cm'].to_f
+    a = data['a_cm'].to_f; b = data['b_cm'].to_f; diag = data['diagonal_cm'].to_f
     angle = shatra_angle_from_sides(a, b, diag)
-
     unless angle
       UI.messagebox("❌ مقاسات الشطرة غير هندسية.\nلازم القطر يكون أكبر من |#{a} - #{b}| وأصغر من #{a + b}.")
       return false
     end
-
     pts = room_pts_from_group(room_group)
     unless pts && pts.length >= 3
       UI.messagebox('❌ لا يمكن قراءة نقاط الغرفة.')
       return false
     end
-
     existing_shatra = shatra_for_corner(room_group, corner_idx)
     target_uuid = data['uuid'].to_s
     target_uuid = existing_shatra['uuid'].to_s if target_uuid.empty? && existing_shatra
-
     prev_i = (corner_idx - 1) % pts.length
     next_i = (corner_idx + 1) % pts.length
-
-    # ✅ FIX: Only use existing original points if they are valid for the current geometry
     original_pts_for_corner = if existing_shatra && existing_shatra['original_corner_pts'].is_a?(Array)
                                 existing_shatra['original_corner_pts']
                               else
@@ -1755,45 +1652,36 @@ updateBig();
                                   [pts[next_i].x.to_f, pts[next_i].y.to_f, pts[next_i].z.to_f]
                                 ]
                               end
-
     if mode == :preview && !has_preview_state?(room_group)
       preview_snapshot(room_group)
     end
-
     new_pts = shatra_adjust_corner_points(pts, corner_idx, angle)
     unless new_pts && polygon_valid_for_wall_edit?(new_pts)
       UI.messagebox('❌ التعديل سيؤدي إلى شكل غرفة غير صالح.')
       return false
     end
-
     model = Sketchup.active_model
     room_data = build_data_from_group(room_group) || {}
     room_data = room_data.dup
     old_pts = pts.map(&:clone)
-
     op_name = (mode == :preview) ? 'MHD Shatra Preview' : 'MHD Smart Shatra Calibration'
     model.start_operation(op_name, true)
     begin
       remove_legacy_source_floor_geometry(old_pts)
       rebuild_room_after_wall_edit(room_group, new_pts, room_data)
-
       shatras = shatras_from_room(room_group)
       shatras.reject! { |s| s['corner_index'].to_i == corner_idx.to_i || (!target_uuid.empty? && s['uuid'].to_s == target_uuid) }
       shatras << {
         'uuid' => (target_uuid.empty? ? uuid : target_uuid),
         'corner_index' => corner_idx.to_i,
-        'a_cm' => a,
-        'b_cm' => b,
-        'diagonal_cm' => diag,
+        'a_cm' => a, 'b_cm' => b, 'diagonal_cm' => diag,
         'angle_deg' => angle,
         'original_corner_pts' => original_pts_for_corner
       }
       save_shatras(room_group, shatras)
       rebuild_all_shatras(room_group)
-
       model.commit_operation
       model.active_view.invalidate
-
       if mode == :apply
         clear_preview_state(room_group) rescue nil
         UI.messagebox("✅ تم ضبط الشطرة بنجاح\n\n#{shatra_result_text(a, b, diag, angle)}")
@@ -1810,17 +1698,14 @@ updateBig();
     shatras_from_room(room_group).find { |s| s['corner_index'].to_i == corner_idx.to_i }
   end
 
-  # ✅ FIXED: Delete shatra & revert geometry correctly
   def delete_shatra(room_group, shatra_uuid)
     return false unless room_group && room_group.valid?
     uuid_to_delete = shatra_uuid.to_s
     shatras = shatras_from_room(room_group)
     target = shatras.find { |s| s['uuid'].to_s == uuid_to_delete }
     return false unless target
-
     corner_idx = target['corner_index'].to_i
     original_pts = target['original_corner_pts']
-
     model = Sketchup.active_model
     model.start_operation('MHD Delete Shatra', true)
     begin
@@ -1830,44 +1715,27 @@ updateBig();
         UI.messagebox('❌ لا يمكن قراءة نقاط الغرفة.')
         return false
       end
-
-      # ✅ FIX: Only revert if original points exist and are valid
       if original_pts.is_a?(Array) && original_pts.length == 3
         n = pts.length
         prev_i = (corner_idx - 1) % n
         next_i = (corner_idx + 1) % n
-
-        # Check if original points are geometrically compatible with current room
-        # If the room was heavily modified, reverting might break it.
-        # We check the distance between current corner and original corner.
         cur_corner = pts[corner_idx]
         orig_corner = Geom::Point3d.new(original_pts[1][0].to_f, original_pts[1][1].to_f, original_pts[1][2].to_f)
-
         if cur_corner.distance(orig_corner) > 5.cm
-          # The room was modified, reverting to old points might create a broken shape.
-          # We'll just delete the shatra mark without reverting geometry.
-          # However, to allow the user to "undo" the shatra, we should revert to the
-          # current corner points (which means no geometry change, just remove the shatra).
-          # But the user wants to go back to the "original" state before the shatra.
-          # If the room was edited, the true original state is lost.
-          # Best effort: use the current points as the new "original".
           UI.messagebox("⚠️ تم تعديل الغرفة بعد تطبيق الشطرة. سيتم إزالة علامة الشطرة فقط دون تغيير شكل الغرفة الحالي.")
         else
           pts[prev_i]     = Geom::Point3d.new(original_pts[0][0].to_f, original_pts[0][1].to_f, original_pts[0][2].to_f)
           pts[corner_idx] = Geom::Point3d.new(original_pts[1][0].to_f, original_pts[1][1].to_f, original_pts[1][2].to_f)
           pts[next_i]     = Geom::Point3d.new(original_pts[2][0].to_f, original_pts[2][1].to_f, original_pts[2][2].to_f)
-
           room_data = build_data_from_group(room_group) || {}
           old_pts = room_pts_from_group(room_group).map(&:clone)
           remove_legacy_source_floor_geometry(old_pts)
           synchronize_room_geometry(room_group, pts, room_data)
         end
       end
-
       remaining = shatras.reject { |s| s['uuid'].to_s == uuid_to_delete }
       save_shatras(room_group, remaining)
       rebuild_all_shatras(room_group)
-
       model.commit_operation
       model.active_view.invalidate
       UI.messagebox('✅ تم حذف الشطرة')
@@ -1882,31 +1750,22 @@ updateBig();
   def open_shatra_dialog(room_group, corner_idx, existing = nil)
     pts = room_pts_from_group(room_group)
     return UI.messagebox('❌ لا توجد نقاط غرفة صالحة.') unless pts && pts.length >= 3
-
     existing ||= shatra_for_corner(room_group, corner_idx)
     current_angle = current_corner_angle(pts, corner_idx) || 90.0
     existing_info = existing ? shatra_result_text(existing['a_cm'], existing['b_cm'], existing['diagonal_cm'], existing['angle_deg'].to_f) : nil
-
     dlg = UI::HtmlDialog.new(
       dialog_title: 'شطرة الحائط — MHDESIGN',
       preferences_key: PREF_KEY + '_SHATRA',
-      scrollable: true,
-      resizable: true,
-      width: 470,
-      height: 720,
-      min_width: 380,
-      min_height: 520,
+      scrollable: true, resizable: true,
+      width: 470, height: 720, min_width: 380, min_height: 520,
       style: UI::HtmlDialog::STYLE_DIALOG
     )
-
     a0 = existing ? existing['a_cm'].to_f : 60.0
     b0 = existing ? existing['b_cm'].to_f : 60.0
     c0 = existing ? existing['diagonal_cm'].to_f : 85.0
     uuid0 = existing ? existing['uuid'].to_s : ''
     safe_info = (existing_info || "لا توجد شطرة محفوظة على هذا الركن.\nالزاوية الهندسية الحالية للركن: #{current_angle.round(2)}°").gsub('&','&amp;').gsub('<','&lt;').gsub('>','&gt;').gsub("\n", '<br>')
-
     has_existing = existing ? 'true' : 'false'
-
     html = <<-HTML
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -1918,7 +1777,6 @@ html,body{margin:0;padding:0;height:100%;width:100%;background:#07131d;color:#ea
 ::-webkit-scrollbar{width:9px}
 ::-webkit-scrollbar-track{background:#07131d}
 ::-webkit-scrollbar-thumb{background:#1d3444;border-radius:20px;border:2px solid #07131d}
-::-webkit-scrollbar-thumb:hover{background:#2a4a5f}
 .app{height:100vh;display:flex;flex-direction:column;background:#07131d}
 .scroll{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;padding:14px 14px 6px;scroll-behavior:smooth}
 .title{text-align:center;font-size:22px;font-weight:900;margin-bottom:4px}
@@ -1938,7 +1796,6 @@ input:focus{outline:2px solid #39a245;background:#0d1b25}
 .footer2{flex:0 0 auto;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:0 14px 12px;background:#07131d}
 button{border:0;border-radius:9px;font-weight:900;font-size:13px;cursor:pointer;transition:filter .15s,transform .05s}
 button:hover{filter:brightness(1.08)}
-button:active{transform:scale(0.98)}
 .btnMain{height:44px;font-size:14px}
 .save{background:#4de37a;color:#061923}
 .preview{background:#2c6b8a;color:#fff}
@@ -1952,29 +1809,24 @@ button:active{transform:scale(0.98)}
 <div class="scroll">
   <div class="title">📐 شطرة الحائط</div>
   <div class="sub">شطرة ذكية مرتبطة مباشرة بالركن والحائط والغرفة</div>
-
   <div class="card">
     <div class="row"><label>المقاس الأول من الركن (سم)</label><input id="a" type="number" min="0.1" step="0.1" value="#{a0}"></div>
     <div class="row"><label>المقاس الثاني من الركن (سم)</label><input id="b" type="number" min="0.1" step="0.1" value="#{b0}"></div>
     <div class="row"><label>القطر بين النقطتين (سم)</label><input id="c" type="number" min="0.1" step="0.1" value="#{c0}"></div>
   </div>
-
   <div class="card">
     <div class="result">الزاوية: <span id="angle">—</span>°
       <div class="state"><span id="state">الحالة: —</span><br><span id="dev">الانحراف: —</span><br><span id="eq">الشطف المكافئ: —</span></div>
     </div>
   </div>
-
   <div class="card">
     <div class="badge">معلومات الشطرة الحالية</div>
     <div id="info" class="info">#{safe_info}</div>
   </div>
-
   <div class="card">
-    <div class="hint">💡 <b>معاينة</b>: تُطبّق الشطرة مؤقتاً على المجسم لتشوف الشكل النهائي قبل الحفظ. لو أغلق النافذة أو ضغط <b>إلغاء المعاينة</b>، الحائط يرجع لحالته الأصلية. عند <b>تطبيق الشطرة</b> يتم الحفظ النهائي.</div>
+    <div class="hint">💡 <b>معاينة</b>: تُطبّق الشطرة مؤقتاً على المجسم لتشوف الشكل النهائي قبل الحفظ.</div>
   </div>
 </div>
-
 <div class="footer">
   <button class="btnMain preview" id="previewBtn" onclick="previewIt()">👁 معاينة الشطرة</button>
   <button class="btnMain cancel" onclick="closeDialog()">إغلاق</button>
@@ -1987,7 +1839,6 @@ button:active{transform:scale(0.98)}
 </div>
 <script>
 let previewActive = #{has_existing};
-
 function fmt(v){return Number(v).toFixed(2)}
 function calc(){
  const a=parseFloat(document.getElementById('a').value),b=parseFloat(document.getElementById('b').value),c=parseFloat(document.getElementById('c').value);
@@ -2006,7 +1857,6 @@ function calc(){
  return {a_cm:a,b_cm:b,diagonal_cm:c};
 }
 ['a','b','c'].forEach(id=>document.getElementById(id).addEventListener('input',calc));
-
 function previewIt(){
  const d=calc();
  if(!d){alert('راجع المقاسات والقطر');return;}
@@ -2019,17 +1869,13 @@ function previewIt(){
    previewActive = true;
  },400);
 }
-
 function applyIt(){
  const d=calc();
  if(!d){alert('راجع المقاسات والقطر');return;}
  sketchup.submit(JSON.stringify(d));
 }
-
 function cancelPreview(){ sketchup.cancel_preview(); }
-
 function deleteIt(){ sketchup.delete_shatra('#{uuid0}'); }
-
 function closeDialog(){
  if(previewActive){ sketchup.cancel_preview_and_close(); }
  else { sketchup.cancel(); }
@@ -2038,10 +1884,8 @@ calc();
 </script>
 </body></html>
     HTML
-
     dlg.set_html(html)
     dlg.add_action_callback('cancel') { dlg.close }
-
     dlg.add_action_callback('preview') do |_, json|
       begin
         data = JSON.parse(json)
@@ -2051,7 +1895,6 @@ calc();
         UI.messagebox("❌ #{e.message}")
       end
     end
-
     dlg.add_action_callback('cancel_preview') do
       begin
         if has_preview_state?(room_group)
@@ -2062,7 +1905,6 @@ calc();
         UI.messagebox("❌ #{e.message}")
       end
     end
-
     dlg.add_action_callback('cancel_preview_and_close') do
       begin
         if has_preview_state?(room_group)
@@ -2073,7 +1915,6 @@ calc();
       end
       dlg.close
     end
-
     dlg.add_action_callback('submit') do |_, json|
       begin
         data = JSON.parse(json)
@@ -2085,7 +1926,6 @@ calc();
         UI.messagebox("❌ #{e.message}")
       end
     end
-
     dlg.add_action_callback('delete_shatra') do |_, uid|
       begin
         clear_preview_state(room_group)
@@ -2095,7 +1935,6 @@ calc();
         UI.messagebox("❌ #{e.message}")
       end
     end
-
     dlg.show
   end
 
@@ -2103,12 +1942,10 @@ calc();
     def activate
       Sketchup.status_text = MHD_RoomBuilder_Context.ts('شطرة الحائط: اضغط على شطرة موجودة لتعديلها/حذفها، أو على حائط لإضافة/قياس شطرة')
     end
-
     def onLButtonDown(_flags, x, y, view)
       ph = view.pick_helper
       ph.do_pick(x, y)
       ent = ph.best_picked
-
       if ent && ent.respond_to?(:get_attribute)
         kind = ent.get_attribute(MHD_RoomBuilder_Context::DICT, 'النوع').to_s
         if kind == 'شطرة حائط'
@@ -2121,19 +1958,16 @@ calc();
           end
         end
       end
-
       room = MHD_RoomBuilder_Context.find_room_group(ent)
       unless room
         UI.messagebox(MHD_RoomBuilder_Context.ts('اضغط على حائط أو شطرة داخل غرفة MHD.'))
         return
       end
-
       click_pt = begin
         view.inputpoint(x, y).position
       rescue
         (ent && ent.respond_to?(:bounds) ? ent.bounds.center : nil)
       end
-
       corner_idx = nil
       if ent && ent.respond_to?(:get_attribute) && ent.get_attribute(MHD_RoomBuilder_Context::DICT, 'النوع').to_s == 'حائط'
         p1s = ent.get_attribute(MHD_RoomBuilder_Context::DICT, 'P1').to_s.split('|').map(&:to_f)
@@ -2150,13 +1984,11 @@ calc();
         UI.messagebox('❌ تعذر تحديد ركن.')
         return
       end
-
       existing = MHD_RoomBuilder_Context.shatra_for_corner(room, corner_idx)
       MHD_RoomBuilder_Context.open_shatra_dialog(room, corner_idx, existing)
     rescue => e
       UI.messagebox("❌ خطأ في أداة الشطرة:\n#{e.message}")
     end
-
     def onCancel(_reason, _view)
       Sketchup.active_model.select_tool(nil)
     end
@@ -2165,6 +1997,10 @@ calc();
   def activate_shatra_picker
     Sketchup.active_model.select_tool(ShatraPickTool.new)
   end
+
+  # ═══════════════════════════════════════════════════════════════════
+  # BEAMS ENGINE — with Follow-Ceiling Feature
+  # ═══════════════════════════════════════════════════════════════════
 
   def beams_from_room(room_group)
     json = room_group.get_attribute(DICT, 'beams_json').to_s
@@ -2192,19 +2028,14 @@ calc();
     p2 = Geom::Point3d.new(b[0], b[1], b[2])
     p3 = c.length >= 3 ? Geom::Point3d.new(c[0], c[1], c[2]) : nil
     p4 = d.length >= 3 ? Geom::Point3d.new(d[0], d[1], d[2]) : nil
-
     dir = p1.vector_to(p2)
     dir.normalize! if dir.length > 0.001
     outward = dir.cross(Z_AXIS)
     outward.normalize! if outward.length > 0.001
     inward = Geom::Vector3d.new(-outward.x, -outward.y, 0)
     inward.normalize! if inward.length > 0.001
-
     {
-      'p1' => p1,
-      'p2' => p2,
-      'p3' => p3,
-      'p4' => p4,
+      'p1' => p1, 'p2' => p2, 'p3' => p3, 'p4' => p4,
       'length_cm' => p1.distance(p2).to_cm,
       'wall_h_cm' => wall.get_attribute(DICT, 'الارتفاع سم').to_f,
       'wall_t_cm' => wall.get_attribute(DICT, 'السمك سم').to_f,
@@ -2218,8 +2049,7 @@ calc();
 
   def find_wall_in_room(room_group, wall_number)
     room_group.entities.to_a.find do |e|
-      e.valid? &&
-        e.is_a?(Sketchup::ComponentInstance) &&
+      e.valid? && e.is_a?(Sketchup::ComponentInstance) &&
         e.get_attribute(DICT, 'النوع').to_s == 'حائط' &&
         e.get_attribute(DICT, 'رقم الحائط').to_i == wall_number.to_i
     end
@@ -2234,22 +2064,6 @@ calc();
     (nums.max || 0) + 1
   end
 
-  def normalize_beam_spec(spec, wall, number = nil)
-    info = wall_info(wall)
-    return nil unless info
-    {
-      'uuid' => (spec['uuid'].to_s.empty? ? uuid : spec['uuid'].to_s),
-      'wall_number' => info['number'],
-      'wall_name' => info['name'],
-      'room_uuid' => info['room_uuid'],
-      'room_name' => info['room_name'],
-      'number' => (number || spec['number']).to_i,
-      'height_cm' => spec['height_cm'].to_f,
-      'depth_cm' => spec['depth_cm'].to_f,
-      'elevation_cm' => spec['elevation_cm'].to_f
-    }
-  end
-
   def delete_room_beams(room_group)
     room_group.entities.to_a.each do |e|
       next unless e.valid?
@@ -2259,6 +2073,7 @@ calc();
     end
   end
 
+  # ✅ build_single_beam with follow-ceiling logic
   def build_single_beam(model, room_group, wall, spec)
     info = wall_info(wall)
     return nil unless info
@@ -2266,10 +2081,23 @@ calc();
     height_cm = spec['height_cm'].to_f
     depth_cm = spec['depth_cm'].to_f
     elevation_cm = spec['elevation_cm'].to_f
+    follow_ceiling = (spec['follow_ceiling'] == true || spec['follow_ceiling'].to_s == 'true')
 
     raise 'ارتفاع الكمر لازم يكون أكبر من صفر' if height_cm <= 0
     raise 'عمق الكمر لازم يكون أكبر من صفر' if depth_cm <= 0
     raise 'ارتفاع الكمر من الأرض لا يمكن أن يكون سالباً' if elevation_cm < 0
+
+    # ✅ If follow_ceiling is ON, recalculate elevation from top_offset
+    if follow_ceiling
+      top_offset = spec['top_offset_cm'].to_f
+      top_offset = [top_offset, 0.0].max
+      elevation_cm = info['wall_h_cm'] - top_offset - height_cm
+      elevation_cm = [[elevation_cm, 0.0].max, [info['wall_h_cm'] - height_cm, 0.0].max].min
+      spec['elevation_cm'] = elevation_cm.round(2)
+      spec['top_offset_cm'] = top_offset.round(2)
+    end
+
+    # Clamp to wall height
     if height_cm > info['wall_h_cm']
       height_cm = info['wall_h_cm']
       elevation_cm = 0.0
@@ -2300,15 +2128,9 @@ calc();
     b   = p2.clone
     c   = p2.offset(inward, depth_actual)
     dpt = p1.offset(inward, depth_actual)
+    a.z = base_z; b.z = base_z; c.z = base_z; dpt.z = base_z
 
-    a.z   = base_z
-    b.z   = base_z
-    c.z   = base_z
-    dpt.z = base_z
-
-    definition = model.definitions.add(
-      "MHD_كمر_#{spec['number']}_حائط_#{info['number']}_#{Time.now.to_i}_#{rand(99999)}"
-    )
+    definition = model.definitions.add("MHD_كمر_#{spec['number']}_حائط_#{info['number']}_#{Time.now.to_i}_#{rand(99999)}")
     face = definition.entities.add_face(a, b, c, dpt)
     raise 'تعذر إنشاء سطح الكمر' unless face
     face.reverse! if face.normal.z < 0
@@ -2318,6 +2140,10 @@ calc();
     beam_inst = room_group.entities.add_instance(definition, Geom::Transformation.new)
     beam_inst.name = beam_name
     beam_inst.layer = tag(model, beam_name)
+
+    top_offset = info['wall_h_cm'] - elevation_cm - height_cm
+    bottom_offset = elevation_cm
+    ceiling_distance = info['wall_h_cm'] - (elevation_cm + height_cm)
 
     set_attrs(beam_inst, {
       'UUID' => spec['uuid'],
@@ -2331,7 +2157,12 @@ calc();
       'ارتفاع الكمر سم' => height_cm,
       'عمق الكمر سم' => depth_cm,
       'ارتفاع من الأرض سم' => elevation_cm,
+      'المسافة من السقف سم' => ceiling_distance,
+      'المسافة من الأرض سم' => bottom_offset,
+      'يتبع السقف' => follow_ceiling ? 'نعم' : 'لا',
+      'إزاحة من أعلى الحائط سم' => top_offset,
       'طول الكمر سم' => info['length_cm'].round(2),
+      'ارتفاع الحائط سم' => info['wall_h_cm'],
       'Wall_P1' => pt_to_s(p1),
       'Wall_P2' => pt_to_s(p2)
     })
@@ -2342,10 +2173,8 @@ calc();
     beams = beams_from_room(room_group)
     delete_room_beams(room_group)
     return true if beams.empty?
-
     model = Sketchup.active_model
     room_group.set_attribute(DICT, 'beams_json', beams.to_json)
-
     beams.group_by { |b| b['wall_number'].to_i }.each do |wall_number, wall_beams|
       wall = find_wall_in_room(room_group, wall_number)
       next unless wall && wall.valid?
@@ -2357,6 +2186,7 @@ calc();
         end
       end
     end
+    save_beams(room_group, beams)
     true
   end
 
@@ -2377,6 +2207,7 @@ calc();
     find_room_group(entity)
   end
 
+  # ✅ Enhanced beam dialog with follow-ceiling toggle
   def open_beam_dialog(target, edit_uuid = nil)
     room_group = beam_room_from_entity(target)
     unless room_group
@@ -2410,7 +2241,9 @@ calc();
         'number' => target.get_attribute(DICT, 'رقم الكمر').to_i,
         'height_cm' => target.get_attribute(DICT, 'ارتفاع الكمر سم').to_f,
         'depth_cm' => target.get_attribute(DICT, 'عمق الكمر سم').to_f,
-        'elevation_cm' => target.get_attribute(DICT, 'ارتفاع من الأرض سم').to_f
+        'elevation_cm' => target.get_attribute(DICT, 'ارتفاع من الأرض سم').to_f,
+        'follow_ceiling' => false,
+        'top_offset_cm' => 0.0
       }
     end
 
@@ -2419,20 +2252,30 @@ calc();
       'number' => number,
       'height_cm' => current ? current['height_cm'].to_f : 20.0,
       'depth_cm' => current ? current['depth_cm'].to_f : [info['wall_t_cm'], 20.0].max,
-      'elevation_cm' => current ? current['elevation_cm'].to_f : [info['wall_h_cm'] - 20.0, 0.0].max
+      'elevation_cm' => current ? current['elevation_cm'].to_f : [info['wall_h_cm'] - 20.0, 0.0].max,
+      'follow_ceiling' => current ? (current['follow_ceiling'] == true) : false,
+      'top_offset_cm' => current ? current['top_offset_cm'].to_f : 0.0
     }
+    if defaults['follow_ceiling'] && defaults['top_offset_cm'] <= 0
+      defaults['top_offset_cm'] = info['wall_h_cm'] - defaults['elevation_cm'] - defaults['height_cm']
+      defaults['top_offset_cm'] = [defaults['top_offset_cm'], 0.0].max
+    end
+
+    follow_toggle_class = defaults['follow_ceiling'] ? 'on' : ''
+    follow_text = defaults['follow_ceiling'] ? 'نعم — يتحرك مع السقف' : 'لا — ثابت في مكانه'
+    follow_opts_class = defaults['follow_ceiling'] ? 'active' : ''
+    follow_hint = defaults['follow_ceiling'] ? '✅ الكمر هيتحرك تلقائياً مع تغيير ارتفاع السقف.' : '📌 الكمر هيفضل ثابت على ارتفاعه الحالي حتى لو السقف اتغير.'
+    ceiling_dist = info['wall_h_cm'] - defaults['elevation_cm'] - defaults['height_cm']
+    floor_dist = defaults['elevation_cm']
 
     dlg = UI::HtmlDialog.new(
-      dialog_title: is_beam ? "تعديل #{current ? "كمر #{number}" : 'الكمر'}" : "إضافة كمر | #{info['name']}",
+      dialog_title: is_beam ? "تعديل كمر #{number}" : "إضافة كمر | #{info['name']}",
       preferences_key: "#{PREF_KEY}_BEAM",
-      scrollable: false,
-      resizable: false,
-      width: 380,
-      height: 440,
+      scrollable: true, resizable: true,
+      width: 420, height: 620,
       style: UI::HtmlDialog::STYLE_DIALOG
     )
 
-    yes = JSON.generate(ts('نعم'))
     html = <<-HTML
 <!DOCTYPE html>
 <html lang="#{ui_locale}" dir="#{ui_direction}">
@@ -2441,54 +2284,137 @@ calc();
 <style>
 *{box-sizing:border-box}
 body{margin:0;background:#07131d;color:#eaf4f8;font-family:Arial,Tahoma,sans-serif;direction:#{ui_direction};overflow:hidden}
-.app{padding:14px}
+::-webkit-scrollbar{width:9px}
+::-webkit-scrollbar-track{background:#07131d}
+::-webkit-scrollbar-thumb{background:#1d3444;border-radius:20px;border:2px solid #07131d}
+.app{height:100vh;display:flex;flex-direction:column}
+.scroll{flex:1 1 auto;overflow-y:auto;padding:14px}
 .head{background:#0c2230;border:1px solid #1c3342;border-radius:12px;padding:12px;margin-bottom:12px}
 .title{font-size:19px;font-weight:900;color:#fff}
 .info{font-size:12px;color:#9fb6c5;line-height:1.7;margin-top:5px}
-.group{background:#0b1b27;border:1px solid #1c3342;border-radius:10px;padding:10px}
-.row{display:grid;grid-template-columns:145px 1fr;gap:8px;align-items:center;margin-bottom:9px}
+.group{background:#0b1b27;border:1px solid #1c3342;border-radius:10px;padding:12px;margin-bottom:12px}
+.group-title{font-size:14px;font-weight:900;color:#39a245;margin-bottom:10px}
+.row{display:grid;grid-template-columns:155px 1fr;gap:8px;align-items:center;margin-bottom:9px}
 label{font-size:13px;font-weight:900;color:#d8e8ef}
-input{width:100%;height:34px;border:0;border-radius:7px;background:#111f2a;color:#fff;outline:1px solid #243d4f;text-align:center;font-size:13px}
+input[type=number],input[type=text]{width:100%;height:36px;border:0;border-radius:7px;background:#111f2a;color:#fff;outline:1px solid #243d4f;text-align:center;font-size:14px}
 input:focus{outline:2px solid #39a245}
-.hint{font-size:11px;color:#8eabbc;line-height:1.5;margin-top:4px}
-.footer{display:flex;gap:8px;margin-top:12px}
-button{height:42px;border:0;border-radius:9px;font-size:14px;font-weight:900;cursor:pointer}
-.save{flex:2;background:#4de37a;color:#061923}
-.close{flex:1;background:#0b1b27;color:#fff;border:1px solid #243d4f}
-.delete{background:#7d2631;color:#fff;padding:0 14px;display:#{is_beam ? 'block' : 'none'}}
+.hint{font-size:11px;color:#8eabbc;line-height:1.55;margin-top:6px;background:#091923;border-radius:8px;padding:8px}
+.switch-row{display:grid;grid-template-columns:155px 1fr;gap:8px;align-items:center;margin-bottom:10px}
+.toggle{height:36px;background:#111f2a;border-radius:8px;outline:1px solid #243d4f;display:flex;align-items:center;justify-content:space-between;padding:0 10px;cursor:pointer;user-select:none;color:#fff;font-size:13px;transition:.15s}
+.toggle.on{background:#0f2a1b;outline:2px solid #39a245}
+.toggle .dot{width:18px;height:18px;border-radius:50%;background:#355467;border:1px solid #57798a;transition:.15s}
+.toggle.on .dot{background:#39a245;border-color:#39a245}
+.info-box{background:#091923;border-radius:8px;padding:10px;font-size:12px;color:#b4cbd7;line-height:1.9;margin-top:8px}
+.info-box b{color:#4de37a}
+.follow-options{display:none;background:#0f2a1b;border-radius:8px;padding:10px;margin-top:6px;border:1px solid #1e4a35}
+.follow-options.active{display:block}
+.footer{flex:0 0 auto;display:grid;grid-template-columns:1.6fr 1fr 0.7fr;gap:8px;padding:10px 14px;border-top:1px solid #1c3342;background:#07131d}
+button{height:42px;border:0;border-radius:9px;font-size:13px;font-weight:900;cursor:pointer;transition:.15s}
+button:hover{filter:brightness(1.08)}
+.save{background:#4de37a;color:#061923}
+.close{background:#0b1b27;color:#fff;border:1px solid #243d4f}
+.delete{background:#7d2631;color:#fff}
 </style>
 </head>
 <body>
 <div class="app">
+<div class="scroll">
   <div class="head">
     <div class="title">#{is_beam ? "⚙️ تعديل كمر #{number}" : '➕ إضافة كمر'}</div>
-    <div class="info">الحائط: #{info['name']}<br>طول الحائط: #{info['length_cm'].round(2)} سم<br>ارتفاع الحائط: #{info['wall_h_cm'].round(2)} سم</div>
+    <div class="info">الحائط: #{info['name']}<br>طول الحائط: #{info['length_cm'].round(2)} سم<br>ارتفاع الحائط الحالي: #{info['wall_h_cm'].round(2)} سم</div>
   </div>
   <div class="group">
-    <div class="row"><label>ارتفاع الكمر سم</label><input id="height" type="number" min="0.1" step="0.1" value="#{defaults['height_cm']}"></div>
+    <div class="group-title">📐 المقاسات الأساسية</div>
+    <div class="row"><label>ارتفاع الكمر سم</label><input id="height" type="number" min="0.1" step="0.1" value="#{defaults['height_cm']}" oninput="updateInfo()"></div>
     <div class="row"><label>عمق الكمر سم</label><input id="depth" type="number" min="0.1" step="0.1" value="#{defaults['depth_cm']}"></div>
-    <div class="row"><label>ارتفاع من الأرض سم</label><input id="elevation" type="number" min="0" step="0.1" value="#{defaults['elevation_cm']}"></div>
-    <div class="hint">الكمر يمتد تلقائياً بطول الحائط بالكامل، وظهره ملزوق في الوش الداخلي، ووشّه داخل الغرفة بعمق الكمر. يُعاد بناؤه تلقائياً عند تعديل ارتفاع أو سمك الحائط.</div>
+    <div class="row"><label>ارتفاع من الأرض سم</label><input id="elevation" type="number" min="0" step="0.1" value="#{defaults['elevation_cm']}" oninput="updateInfo()"></div>
+    <div class="info-box" id="live_info">
+      المسافة من السقف: <b id="ceil_dist">#{ceiling_dist.round(2)}</b> سم<br>
+      المسافة من الأرض: <b id="floor_dist">#{floor_dist.round(2)}</b> سم
+    </div>
   </div>
-  <div class="footer">
-    <button class="save" onclick="submitData()">#{is_beam ? 'حفظ التعديل' : 'إضافة الكمر'}</button>
-    <button class="delete" onclick="removeBeam()">حذف</button>
-    <button class="close" onclick="sketchup.cancel()">إغلاق</button>
+  <div class="group">
+    <div class="group-title">🎯 سلوك الكمر عند تغيير ارتفاع السقف</div>
+    <div class="switch-row">
+      <label>يتبع ارتفاع السقف</label>
+      <div id="follow_toggle" class="toggle #{follow_toggle_class}" onclick="toggleFollow()">
+        <span id="follow_text">#{follow_text}</span>
+        <b class="dot"></b>
+      </div>
+    </div>
+    <div class="follow-options #{follow_opts_class}" id="follow_opts">
+      <div class="row"><label>المسافة من أعلى الحائط سم</label><input id="top_offset" type="number" min="0" step="0.1" value="#{defaults['top_offset_cm']}"></div>
+      <div class="hint">لو السقف اتغير من #{info['wall_h_cm'].round(2)} سم إلى قيمة جديدة، الكمر هيتحرك تلقائياً عشان يفضل على نفس المسافة من السقف.</div>
+    </div>
+    <div class="hint" id="follow_hint">#{follow_hint}</div>
   </div>
+  <div class="group">
+    <div class="group-title">📊 معلومات مفصلة</div>
+    <div class="info-box">
+      الحائط: <b>#{info['name']}</b><br>
+      ارتفاع الحائط: <b>#{info['wall_h_cm'].round(2)}</b> سم<br>
+      طول الحائط: <b>#{info['length_cm'].round(2)}</b> سم<br>
+      سمك الحائط: <b>#{info['wall_t_cm'].round(2)}</b> سم<br>
+      رقم الكمر: <b>#{number}</b>
+    </div>
+  </div>
+  <div class="hint">الكمر يمتد تلقائياً بطول الحائط بالكامل، وظهره ملزوق في الوش الداخلي، ووشّه داخل الغرفة بعمق الكمر.</div>
+</div>
+<div class="footer">
+  <button class="save" onclick="submitData()">#{is_beam ? '💾 حفظ التعديل' : '➕ إضافة الكمر'}</button>
+  <button class="close" onclick="sketchup.cancel()">إغلاق</button>
+  <button class="delete" style="display:#{is_beam ? 'block' : 'none'}" onclick="removeBeam()">🗑</button>
+</div>
 </div>
 <script>
+const WALL_H = #{info['wall_h_cm'].to_f};
 function val(id){return document.getElementById(id).value}
+function toggleFollow(){
+  const el = document.getElementById('follow_toggle');
+  el.classList.toggle('on');
+  const on = el.classList.contains('on');
+  document.getElementById('follow_text').textContent = on ? 'نعم — يتحرك مع السقف' : 'لا — ثابت في مكانه';
+  document.getElementById('follow_opts').classList.toggle('active', on);
+  document.getElementById('follow_hint').textContent = on
+    ? '✅ الكمر هيتحرك تلقائياً مع تغيير ارتفاع السقف.'
+    : '📌 الكمر هيفضل ثابت على ارتفاعه الحالي حتى لو السقف اتغير.';
+  updateInfo();
+}
+function updateInfo(){
+  const h = parseFloat(val('height')) || 0;
+  const e = parseFloat(val('elevation')) || 0;
+  const ceilDist = WALL_H - e - h;
+  document.getElementById('ceil_dist').textContent = ceilDist.toFixed(2);
+  document.getElementById('floor_dist').textContent = e.toFixed(2);
+}
 function submitData(){
-  const h=parseFloat(val('height')), d=parseFloat(val('depth')), z=parseFloat(val('elevation'));
-  if(!(h>0) || !(d>0) || !(z>=0)){alert('راجع المقاسات');return}
-  if(z+h>#{info['wall_h_cm'].to_f}+0.001){alert('ارتفاع الكمر + ارتفاعه من الأرض أكبر من ارتفاع الحائط');return}
-  sketchup.submit(JSON.stringify({height_cm:h,depth_cm:d,elevation_cm:z}));
+  const h=parseFloat(val('height'));
+  const d=parseFloat(val('depth'));
+  const z=parseFloat(val('elevation'));
+  const follow = document.getElementById('follow_toggle').classList.contains('on');
+  let topOffset = parseFloat(val('top_offset')) || 0;
+  if(!(h>0) || !(d>0) || !(z>=0)){alert('راجع المقاسات');return;}
+  if(z+h>WALL_H+0.001){alert('ارتفاع الكمر + ارتفاعه من الأرض أكبر من ارتفاع الحائط');return;}
+  if(follow && topOffset <= 0){
+    topOffset = Math.max(WALL_H - z - h, 0);
+  }
+  if(!follow){
+    topOffset = Math.max(WALL_H - z - h, 0);
+  }
+  sketchup.submit(JSON.stringify({
+    height_cm: h,
+    depth_cm: d,
+    elevation_cm: z,
+    follow_ceiling: follow,
+    top_offset_cm: topOffset
+  }));
 }
 function removeBeam(){sketchup.removeBeam()}
+updateInfo();
 </script>
 </body>
 </html>
-HTML
+    HTML
 
     dlg.set_html(html)
     dlg.add_action_callback('cancel') { dlg.close }
@@ -2499,10 +2425,11 @@ HTML
         h = data['height_cm'].to_f
         d = data['depth_cm'].to_f
         z = data['elevation_cm'].to_f
+        follow = data['follow_ceiling'] == true
+        top_offset = data['top_offset_cm'].to_f
         if h <= 0 || d <= 0 || z < 0 || z + h > info['wall_h_cm'] + 0.001
           raise 'قيم الكمر غير صالحة بالنسبة لارتفاع الحائط.'
         end
-
         model = Sketchup.active_model
         model.start_operation(is_beam ? 'MHD Edit Beam' : 'MHD Add Beam', true)
         begin
@@ -2514,6 +2441,8 @@ HTML
             beams[idx]['height_cm'] = h
             beams[idx]['depth_cm'] = d
             beams[idx]['elevation_cm'] = z
+            beams[idx]['follow_ceiling'] = follow
+            beams[idx]['top_offset_cm'] = top_offset
             beams[idx]['wall_number'] = info['number']
             beams[idx]['wall_name'] = info['name']
             beams[idx]['room_name'] = info['room_name']
@@ -2528,7 +2457,9 @@ HTML
               'number' => number,
               'height_cm' => h,
               'depth_cm' => d,
-              'elevation_cm' => z
+              'elevation_cm' => z,
+              'follow_ceiling' => follow,
+              'top_offset_cm' => top_offset
             }
           end
           save_beams(room_group, beams)
@@ -2536,7 +2467,9 @@ HTML
           model.commit_operation
           model.active_view.invalidate
           dlg.close
-          UI.messagebox("✅ تم #{is_beam ? 'تعديل' : 'إضافة'} الكمر بنجاح")
+          msg = follow ? "✅ تم #{is_beam ? 'تعديل' : 'إضافة'} الكمر — سيتحرك تلقائياً مع تغيير السقف" :
+                         "✅ تم #{is_beam ? 'تعديل' : 'إضافة'} الكمر — سيبقى ثابتاً عند تغيير السقف"
+          UI.messagebox(msg)
         rescue => e
           model.abort_operation rescue nil
           UI.messagebox("❌ #{e.message}")
@@ -2575,7 +2508,6 @@ HTML
     def activate
       Sketchup.status_text = MHD_RoomBuilder_Context.ts('انقر على حائط لإضافة كمر أو على كمر لتعديله')
     end
-
     def onLButtonDown(_flags, x, y, view)
       ph = view.pick_helper
       ph.do_pick(x, y)
@@ -2584,23 +2516,18 @@ HTML
         UI.messagebox(MHD_RoomBuilder_Context.ts('لم يتم تحديد أي عنصر'))
         return
       end
-
       room = MHD_RoomBuilder_Context.find_room_group(ent)
       unless room
         UI.messagebox(MHD_RoomBuilder_Context.ts('هذا العنصر ليس جزءاً من غرفة MHD'))
         return
       end
-
       type = ent.get_attribute(MHD_RoomBuilder_Context::DICT, 'النوع').to_s rescue ''
-      if type == 'كمر'
-        MHD_RoomBuilder_Context.open_beam_dialog(ent)
-      elsif type == 'حائط'
+      if type == 'كمر' || type == 'حائط'
         MHD_RoomBuilder_Context.open_beam_dialog(ent)
       else
         UI.messagebox(MHD_RoomBuilder_Context.ts('اضغط على حائط أو كمر داخل غرفة MHD'))
       end
     end
-
     def onCancel(_reason, _view)
       Sketchup.active_model.select_tool(nil)
     end
@@ -2609,6 +2536,10 @@ HTML
   def activate_beam_picker
     Sketchup.active_model.select_tool(BeamPickTool.new)
   end
+
+  # ═══════════════════════════════════════════════════════════════════
+  # HTML Dialog Content (Room Builder)
+  # ═══════════════════════════════════════════════════════════════════
 
   def html_dialog_content(values)
     v = values
@@ -2679,7 +2610,7 @@ button{height:40px;border-radius:10px;font-size:14px;font-weight:900;cursor:poin
 <img class="logo" src="#{LOGO_URL}">
 <div class="head-text">
 <div class="title-main">بناء الحوائط</div>
-<div class="subtitle">تم تصميم هذه الأداة بواسطة MHDESIGN<br>Room Builder V4.0</div>
+<div class="subtitle">تم تصميم هذه الأداة بواسطة MHDESIGN<br>Room Builder V4.2</div>
 </div>
 </div>
 <div class="wrap">
@@ -2725,7 +2656,6 @@ button{height:40px;border-radius:10px;font-size:14px;font-weight:900;cursor:poin
 </select>
 </div>
 <div id="drop_reference_hint" class="hint">اختر هل قيمة ارتفاع الحائط تمثل السقف الأساسي أم الارتفاع الصافي أسفل الجزء الساقط.</div>
-
 
     <div id="opts_flat" class="conditional"><div class="hint">سقف كامل بمستوى واحد حسب ارتفاع الحائط وسمك السقف.</div></div>
     <div id="opts_perimeter" class="conditional">
@@ -2781,8 +2711,6 @@ button{height:40px;border-radius:10px;font-size:14px;font-weight:900;cursor:poin
     </div>
   </div>
 </div>
-
-
 </div>
 <div class="footer">
 <button class="ok" onclick="submitData()">إنشاء</button>
@@ -2868,10 +2796,8 @@ HTML
     dlg = UI::HtmlDialog.new(
       dialog_title: ts('بناء الحوائط'),
       preferences_key: PREF_KEY,
-      scrollable: false,
-      resizable: true,
-      width: 330,
-      height: 720,
+      scrollable: false, resizable: true,
+      width: 330, height: 720,
       style: UI::HtmlDialog::STYLE_DIALOG
     )
     dlg.set_html(html_dialog_content(saved_values))
@@ -2888,8 +2814,7 @@ HTML
     nil
   end
 
-  def build_ceiling(model, room_ents, room_name, room_uuid, outer_pts, room_pts,
-                    wall_h, ceil_t, ceil_t_cm, data)
+  def build_ceiling(model, room_ents, room_name, room_uuid, outer_pts, room_pts, wall_h, ceil_t, ceil_t_cm, data)
     pattern = data['ceiling_pattern'].to_s
     pattern = 'flat' unless %w[flat perimeter center center_hidden_led double_hidden_led strips hidden_cove].include?(pattern)
     common = {
@@ -2903,14 +2828,12 @@ HTML
     set_attrs(ceiling_inst, common.merge('UUID' => uuid, 'الجزء' => 'السقف الكامل'))
     room_ents = ceiling_def.entities
 
-
     selected_drop = case pattern
                     when 'perimeter' then [data['perimeter_drop'].to_f.cm, 0.5.cm].max
                     when 'center' then [data['center_drop'].to_f.cm, 0.5.cm].max
                     when 'center_hidden_led' then [data['center_led_drop'].to_f.cm, 1.cm].max
                     when 'double_hidden_led'
-                      [[data['combo_cove_drop'].to_f.cm, 1.cm].max,
-                       [data['combo_center_drop'].to_f.cm, 1.cm].max].max
+                      [[data['combo_cove_drop'].to_f.cm, 1.cm].max, [data['combo_center_drop'].to_f.cm, 1.cm].max].max
                     when 'strips' then [data['strip_drop'].to_f.cm, 0.5.cm].max
                     when 'hidden_cove' then [data['cove_drop'].to_f.cm, 0.5.cm].max
                     else 0.0
@@ -2920,12 +2843,9 @@ HTML
     base_z = (pattern != 'flat' && drop_reference == 'wall_is_finish') ? wall_h + selected_drop : wall_h
     common['طريقة حساب السقوط'] = drop_reference
 
-    add_poly_component(model, room_ents, ts('السقف الأساسي'), nil,
-                       outer_pts, base_z, ceil_t, common.merge('الجزء' => 'أساسي'))
+    add_poly_component(model, room_ents, ts('السقف الأساسي'), nil, outer_pts, base_z, ceil_t, common.merge('الجزء' => 'أساسي'))
 
-    light_reference = { kind: :perimeter, source_pts: room_pts,
-                        distance: data['light_inset'].to_f.cm,
-                        underside_z: base_z, strips: [] }
+    light_reference = { kind: :perimeter, source_pts: room_pts, distance: data['light_inset'].to_f.cm, underside_z: base_z, strips: [] }
 
     case pattern
     when 'perimeter'
@@ -2933,28 +2853,18 @@ HTML
       drop = selected_drop
       inner = offset_polygon(room_pts, width)
       if polygon_usable?(inner)
-        add_ring_component(model, room_ents, ts('السقف الساقط المحيطي'),
-                           nil, outer_pts, inner,
-                           base_z - drop, drop, common.merge(
-                             'الجزء' => 'إطار محيطي', 'عرض الإطار سم' => data['perimeter_width'].to_f,
-                             'مقدار النزول سم' => data['perimeter_drop'].to_f))
-        light_reference = { kind: :perimeter, source_pts: room_pts,
-                            distance: [width - data['light_inset'].to_f.cm, 0.2.cm].max,
-                            underside_z: base_z - drop, strips: [] }
+        add_ring_component(model, room_ents, ts('السقف الساقط المحيطي'), nil, outer_pts, inner, base_z - drop, drop,
+                           common.merge('الجزء' => 'إطار محيطي', 'عرض الإطار سم' => data['perimeter_width'].to_f, 'مقدار النزول سم' => data['perimeter_drop'].to_f))
+        light_reference = { kind: :perimeter, source_pts: room_pts, distance: [width - data['light_inset'].to_f.cm, 0.2.cm].max, underside_z: base_z - drop, strips: [] }
       end
     when 'center'
       inset = [data['center_inset'].to_f.cm, 1.cm].max
       drop = selected_drop
       center = offset_polygon(room_pts, inset)
       if polygon_usable?(center)
-        add_poly_component(model, room_ents, ts('السقف الساقط الأوسط'),
-                           nil, center,
-                           base_z - drop, drop, common.merge(
-                             'الجزء' => 'منتصف ساقط', 'الارتداد سم' => data['center_inset'].to_f,
-                             'مقدار النزول سم' => data['center_drop'].to_f))
-        light_reference = { kind: :perimeter, source_pts: room_pts,
-                            distance: inset + data['light_inset'].to_f.cm,
-                            underside_z: base_z - drop, strips: [] }
+        add_poly_component(model, room_ents, ts('السقف الساقط الأوسط'), nil, center, base_z - drop, drop,
+                           common.merge('الجزء' => 'منتصف ساقط', 'الارتداد سم' => data['center_inset'].to_f, 'مقدار النزول سم' => data['center_drop'].to_f))
+        light_reference = { kind: :perimeter, source_pts: room_pts, distance: inset + data['light_inset'].to_f.cm, underside_z: base_z - drop, strips: [] }
       end
     when 'center_hidden_led'
       inset = [data['center_led_inset'].to_f.cm, 5.cm].max
@@ -2970,22 +2880,13 @@ HTML
         led_outer = offset_polygon(island, led_inset)
         led_inner = offset_polygon(island, led_inset + led_width)
         support = offset_polygon(island, led_inset + led_width + 2.cm)
-        add_poly_component(model, room_ents, ts('جزيرة السقف الساقطة'), nil,
-                           island, panel_bottom_z, panel_thickness,
-                           common.merge('الجزء' => 'جزيرة ساقطة بليد مخفي',
-                                        'الارتداد سم' => data['center_led_inset'].to_f,
-                                        'مقدار النزول سم' => data['center_led_drop'].to_f,
-                                        'سمك لوح الجزيرة سم' => data['center_led_thickness'].to_f))
+        add_poly_component(model, room_ents, ts('جزيرة السقف الساقطة'), nil, island, panel_bottom_z, panel_thickness,
+                           common.merge('الجزء' => 'جزيرة ساقطة بليد مخفي', 'الارتداد سم' => data['center_led_inset'].to_f, 'مقدار النزول سم' => data['center_led_drop'].to_f, 'سمك لوح الجزيرة سم' => data['center_led_thickness'].to_f))
         if polygon_usable?(support) && base_z > panel_top_z
-          add_poly_component(model, room_ents, ts('قلب تثبيت الجزيرة'), nil,
-                             support, panel_top_z, base_z - panel_top_z,
-                             common.merge('الجزء' => 'قلب تثبيت مخفي'))
+          add_poly_component(model, room_ents, ts('قلب تثبيت الجزيرة'), nil, support, panel_top_z, base_z - panel_top_z, common.merge('الجزء' => 'قلب تثبيت مخفي'))
         end
         if polygon_usable?(led_outer) && polygon_usable?(led_inner)
-          light_reference = { kind: :direct, outer: led_outer, inner: led_inner,
-                              underside_z: panel_top_z,
-                              glow_surface: :horizontal, glow_path: led_outer,
-                              glow_spread: :outward, strips: [] }
+          light_reference = { kind: :direct, outer: led_outer, inner: led_inner, underside_z: panel_top_z, glow_surface: :horizontal, glow_path: led_outer, glow_spread: :outward, strips: [] }
         end
       end
     when 'double_hidden_led'
@@ -2999,23 +2900,14 @@ HTML
       references = []
       if polygon_usable?(box_inner) && polygon_usable?(hand_inner)
         box_bottom_z = base_z - cove_drop
-        add_ring_component(model, room_ents, ts('صندوق بيت النور المدمج'), nil,
-                           outer_pts, box_inner, box_bottom_z, cove_drop,
-                           common.merge('الجزء' => 'بيت نور محيطي مدمج',
-                                        'عرض بيت النور سم' => data['combo_cove_width'].to_f,
-                                        'مقدار النزول سم' => data['combo_cove_drop'].to_f))
-        add_ring_component(model, room_ents, ts('اليد المخفية المحيطية'), nil,
-                           box_inner, hand_inner, box_bottom_z, cove_hand_thickness,
-                           common.merge('الجزء' => 'يد إضاءة محيطية مخفية',
-                                        'بروز اليد سم' => data['combo_cove_lip_width'].to_f,
-                                        'سمك اليد سم' => data['combo_cove_lip_height'].to_f))
+        add_ring_component(model, room_ents, ts('صندوق بيت النور المدمج'), nil, outer_pts, box_inner, box_bottom_z, cove_drop,
+                           common.merge('الجزء' => 'بيت نور محيطي مدمج', 'عرض بيت النور سم' => data['combo_cove_width'].to_f, 'مقدار النزول سم' => data['combo_cove_drop'].to_f))
+        add_ring_component(model, room_ents, ts('اليد المخفية المحيطية'), nil, box_inner, hand_inner, box_bottom_z, cove_hand_thickness,
+                           common.merge('الجزء' => 'يد إضاءة محيطية مخفية', 'بروز اليد سم' => data['combo_cove_lip_width'].to_f, 'سمك اليد سم' => data['combo_cove_lip_height'].to_f))
         led_width = [data['light_width'].to_f.cm, 0.3.cm].max
         cove_led_inner = offset_polygon(box_inner, led_width)
         if polygon_usable?(cove_led_inner)
-          references << { kind: :direct, outer: box_inner, inner: cove_led_inner,
-                          underside_z: box_bottom_z + cove_hand_thickness,
-                          glow_surface: :horizontal, glow_path: box_inner,
-                          glow_spread: :inward, strips: [] }
+          references << { kind: :direct, outer: box_inner, inner: cove_led_inner, underside_z: box_bottom_z + cove_hand_thickness, glow_surface: :horizontal, glow_path: box_inner, glow_spread: :inward, strips: [] }
         end
       end
       island_inset = [data['combo_center_inset'].to_f.cm, cove_width + cove_hand_width + 5.cm].max
@@ -3031,22 +2923,13 @@ HTML
         island_led_outer = offset_polygon(island, led_inset)
         island_led_inner = offset_polygon(island, led_inset + led_width)
         support = offset_polygon(island, led_inset + led_width + 2.cm)
-        add_poly_component(model, room_ents, ts('الجزيرة الساقطة المدمجة'), nil,
-                           island, panel_bottom_z, panel_thickness,
-                           common.merge('الجزء' => 'جزيرة وسط بليد مخفي',
-                                        'الارتداد سم' => data['combo_center_inset'].to_f,
-                                        'مقدار النزول سم' => data['combo_center_drop'].to_f,
-                                        'سمك اللوح سم' => data['combo_center_thickness'].to_f))
+        add_poly_component(model, room_ents, ts('الجزيرة الساقطة المدمجة'), nil, island, panel_bottom_z, panel_thickness,
+                           common.merge('الجزء' => 'جزيرة وسط بليد مخفي', 'الارتداد سم' => data['combo_center_inset'].to_f, 'مقدار النزول سم' => data['combo_center_drop'].to_f, 'سمك اللوح سم' => data['combo_center_thickness'].to_f))
         if polygon_usable?(support) && base_z > panel_top_z
-          add_poly_component(model, room_ents, ts('قلب تثبيت الجزيرة المدمجة'), nil,
-                             support, panel_top_z, base_z - panel_top_z,
-                             common.merge('الجزء' => 'قلب تثبيت مخفي'))
+          add_poly_component(model, room_ents, ts('قلب تثبيت الجزيرة المدمجة'), nil, support, panel_top_z, base_z - panel_top_z, common.merge('الجزء' => 'قلب تثبيت مخفي'))
         end
         if polygon_usable?(island_led_outer) && polygon_usable?(island_led_inner)
-          references << { kind: :direct, outer: island_led_outer, inner: island_led_inner,
-                          underside_z: panel_top_z,
-                          glow_surface: :horizontal, glow_path: island_led_outer,
-                          glow_spread: :outward, strips: [] }
+          references << { kind: :direct, outer: island_led_outer, inner: island_led_inner, underside_z: panel_top_z, glow_surface: :horizontal, glow_path: island_led_outer, glow_spread: :outward, strips: [] }
         end
       end
       light_reference = references unless references.empty?
@@ -3054,11 +2937,8 @@ HTML
       strips = ceiling_strip_polygons(room_pts, data)
       drop = selected_drop
       strips.each_with_index do |strip_pts, index|
-        add_poly_component(model, room_ents, format(ts('شريط السقف %02d'), index + 1),
-                           nil,
-                           strip_pts, base_z - drop, drop,
-                           common.merge('الجزء' => 'شريط', 'رقم الشريط' => index + 1,
-                                        'مقدار النزول سم' => data['strip_drop'].to_f))
+        add_poly_component(model, room_ents, format(ts('شريط السقف %02d'), index + 1), nil, strip_pts, base_z - drop, drop,
+                           common.merge('الجزء' => 'شريط', 'رقم الشريط' => index + 1, 'مقدار النزول سم' => data['strip_drop'].to_f))
       end
       light_reference = { kind: :strips, underside_z: base_z - drop, strips: strips }
     when 'hidden_cove'
@@ -3070,35 +2950,22 @@ HTML
       hand_inner = offset_polygon(box_inner, hand_projection) if polygon_usable?(box_inner)
       if polygon_usable?(box_inner) && polygon_usable?(hand_inner)
         box_bottom_z = base_z - drop
-        add_ring_component(model, room_ents, ts('صندوق بيت النور المحيطي'), nil,
-                           outer_pts, box_inner, box_bottom_z, drop,
-                           common.merge('الجزء' => 'صندوق بيت نور محيطي',
-                                        'عرض بيت النور سم' => data['cove_inset'].to_f,
-                                        'مقدار النزول سم' => data['cove_drop'].to_f))
-        add_ring_component(model, room_ents, ts('اليد المخفية'), nil,
-                           box_inner, hand_inner, box_bottom_z,
-                           [hand_thickness, drop * 0.35].min,
-                           common.merge('الجزء' => 'يد إضاءة مخفية',
-                                        'بروز اليد سم' => data['cove_lip_width'].to_f,
-                                        'سمك اليد سم' => data['cove_lip_height'].to_f))
+        add_ring_component(model, room_ents, ts('صندوق بيت النور المحيطي'), nil, outer_pts, box_inner, box_bottom_z, drop,
+                           common.merge('الجزء' => 'صندوق بيت نور محيطي', 'عرض بيت النور سم' => data['cove_inset'].to_f, 'مقدار النزول سم' => data['cove_drop'].to_f))
+        add_ring_component(model, room_ents, ts('اليد المخفية'), nil, box_inner, hand_inner, box_bottom_z, [hand_thickness, drop * 0.35].min,
+                           common.merge('الجزء' => 'يد إضاءة مخفية', 'بروز اليد سم' => data['cove_lip_width'].to_f, 'سمك اليد سم' => data['cove_lip_height'].to_f))
         led_width = [data['light_width'].to_f.cm, 0.3.cm].max
         led_inner = offset_polygon(box_inner, led_width)
-        light_reference = { kind: :direct, outer: box_inner, inner: led_inner,
-                            underside_z: box_bottom_z + [hand_thickness, drop * 0.35].min,
-                            glow_surface: :horizontal, glow_path: box_inner,
-                            strips: [] }
+        light_reference = { kind: :direct, outer: box_inner, inner: led_inner, underside_z: box_bottom_z + [hand_thickness, drop * 0.35].min, glow_surface: :horizontal, glow_path: box_inner, strips: [] }
       end
     end
 
     if enabled_value?(data['light_enabled'])
       references = light_reference.is_a?(Array) ? light_reference : [light_reference]
       references.compact.each do |reference|
-        build_ceiling_lighting(model, room_ents, room_name, room_uuid, outer_pts,
-                               reference, data)
+        build_ceiling_lighting(model, room_ents, room_name, room_uuid, outer_pts, reference, data)
       end
     end
-
-
   end
 
   def ceiling_strip_polygons(outer_pts, data)
@@ -3139,42 +3006,30 @@ HTML
     groove_mat = led_material(model, color, true)
     attrs = {
       'Room_UUID' => room_uuid, 'اسم الغرفة' => room_name,
-      'عرض المجرى سم' => data['light_width'].to_f,
-      'عمق المجرى سم' => data['light_depth'].to_f,
-      'لون الإضاءة' => color,
-      'شدة الإضاءة %' => glow_intensity,
-      'حجم انتشار الإضاءة سم' => data['glow_size'].to_f
+      'عرض المجرى سم' => data['light_width'].to_f, 'عمق المجرى سم' => data['light_depth'].to_f,
+      'لون الإضاءة' => color, 'شدة الإضاءة %' => glow_intensity, 'حجم انتشار الإضاءة سم' => data['glow_size'].to_f
     }
     if ref[:kind] == :strips
       ref[:strips].each_with_index do |poly, index|
         xs = poly.map(&:x); ys = poly.map(&:y)
-        min_x,max_x = xs.minmax; min_y,max_y = ys.minmax
-        run_x = (max_x-min_x) >= (max_y-min_y)
+        min_x, max_x = xs.minmax; min_y, max_y = ys.minmax
+        run_x = (max_x - min_x) >= (max_y - min_y)
         if run_x
-          cy = (min_y+max_y)/2.0
-          led_poly = rect_points(min_x+margin, cy-width/2.0, max_x-margin, cy+width/2.0)
+          cy = (min_y + max_y) / 2.0
+          led_poly = rect_points(min_x + margin, cy - width / 2.0, max_x - margin, cy + width / 2.0)
         else
-          cx = (min_x+max_x)/2.0
-          led_poly = rect_points(cx-width/2.0, min_y+margin, cx+width/2.0, max_y-margin)
+          cx = (min_x + max_x) / 2.0
+          led_poly = rect_points(cx - width / 2.0, min_y + margin, cx + width / 2.0, max_y - margin)
         end
         next unless polygon_usable?(led_poly)
-        add_light_parts(model, room_ents, room_name, index + 1, led_poly, nil,
-                        ref[:underside_z], depth, mode, attrs, groove_mat,
-                        color, glow_intensity, glow_size,
-                        ref[:glow_direction] || :down,
-                        ref[:glow_surface] || :vertical, ref[:glow_path],
-                        ref[:glow_spread] || :inward)
+        add_light_parts(model, room_ents, room_name, index + 1, led_poly, nil, ref[:underside_z], depth, mode, attrs, groove_mat,
+                        color, glow_intensity, glow_size, ref[:glow_direction] || :down, ref[:glow_surface] || :vertical, ref[:glow_path], ref[:glow_spread] || :inward)
       end
     elsif ref[:kind] == :direct
-      ring_outer = ref[:outer]
-      ring_inner = ref[:inner]
+      ring_outer = ref[:outer]; ring_inner = ref[:inner]
       return unless polygon_usable?(ring_outer) && polygon_usable?(ring_inner)
-      add_light_parts(model, room_ents, room_name, 1, ring_outer, ring_inner,
-                      ref[:underside_z], depth, mode, attrs, groove_mat,
-                      color, glow_intensity, glow_size,
-                      ref[:glow_direction] || :down,
-                      ref[:glow_surface] || :vertical, ref[:glow_path],
-                      ref[:glow_spread] || :inward)
+      add_light_parts(model, room_ents, room_name, 1, ring_outer, ring_inner, ref[:underside_z], depth, mode, attrs, groove_mat,
+                      color, glow_intensity, glow_size, ref[:glow_direction] || :down, ref[:glow_surface] || :vertical, ref[:glow_path], ref[:glow_spread] || :inward)
     else
       d1 = [ref[:distance].to_f, 0.2.cm].max
       d2 = d1 + width
@@ -3182,42 +3037,27 @@ HTML
       ring_outer = offset_polygon(source_pts, d1)
       ring_inner = offset_polygon(source_pts, d2)
       return unless polygon_usable?(ring_outer) && polygon_usable?(ring_inner)
-      add_light_parts(model, room_ents, room_name, 1, ring_outer, ring_inner,
-                      ref[:underside_z], depth, mode, attrs, groove_mat,
-                      color, glow_intensity, glow_size,
-                      ref[:glow_direction] || :down,
-                      ref[:glow_surface] || :vertical, ref[:glow_path],
-                      ref[:glow_spread] || :inward)
+      add_light_parts(model, room_ents, room_name, 1, ring_outer, ring_inner, ref[:underside_z], depth, mode, attrs, groove_mat,
+                      color, glow_intensity, glow_size, ref[:glow_direction] || :down, ref[:glow_surface] || :vertical, ref[:glow_path], ref[:glow_spread] || :inward)
     end
   end
 
-  def add_light_parts(model, room_ents, room_name, number, outer, inner, underside_z,
-                      depth, mode, attrs, groove_mat,
-                      color, glow_intensity, glow_size, glow_direction = :down,
-                      glow_surface = :vertical, custom_glow_path = nil,
-                      glow_spread = :inward)
+  def add_light_parts(model, room_ents, room_name, number, outer, inner, underside_z, depth, mode, attrs, groove_mat,
+                      color, glow_intensity, glow_size, glow_direction = :down, glow_surface = :vertical, custom_glow_path = nil, glow_spread = :inward)
     if mode == 'groove' || mode == 'both'
       name = number > 1 ? format(ts('مجرى إضاءة %02d'), number) : ts('مجرى الإضاءة')
       if inner
-        add_ring_component(model, room_ents, name, nil,
-                           outer, inner, underside_z - 0.2.mm, depth,
-                           attrs.merge('النوع' => 'مجرى إضاءة'), groove_mat)
+        add_ring_component(model, room_ents, name, nil, outer, inner, underside_z - 0.2.mm, depth, attrs.merge('النوع' => 'مجرى إضاءة'), groove_mat)
       else
-        add_poly_component(model, room_ents, name, nil,
-                           outer, underside_z - 0.2.mm, depth,
-                           attrs.merge('النوع' => 'مجرى إضاءة'), groove_mat)
+        add_poly_component(model, room_ents, name, nil, outer, underside_z - 0.2.mm, depth, attrs.merge('النوع' => 'مجرى إضاءة'), groove_mat)
       end
     end
     return unless mode == 'effect' || mode == 'both'
     glow_path = custom_glow_path || inner || outer
     if glow_surface == :horizontal
-      add_horizontal_gradient_glow(model, room_ents, room_name, glow_path,
-                                   underside_z, glow_size, color, glow_intensity, attrs,
-                                   glow_spread)
+      add_horizontal_gradient_glow(model, room_ents, room_name, glow_path, underside_z, glow_size, color, glow_intensity, attrs, glow_spread)
     else
-      add_vertical_gradient_glow(model, room_ents, room_name, glow_path,
-                                 underside_z, glow_size, color, glow_intensity, attrs,
-                                 glow_direction)
+      add_vertical_gradient_glow(model, room_ents, room_name, glow_path, underside_z, glow_size, color, glow_intensity, attrs, glow_direction)
     end
   end
 
@@ -3251,21 +3091,13 @@ HTML
     count = pts.length
     outward_pts = []
     count.times do |i|
-      p_prev = pts[(i - 1) % count]
-      p_curr = pts[i]
-      p_next = pts[(i + 1) % count]
-      d_prev = p_prev.vector_to(p_curr)
-      d_curr = p_curr.vector_to(p_next)
-      d_prev.normalize!
-      d_curr.normalize!
-      out_prev = d_prev.cross(Z_AXIS)
-      out_curr = d_curr.cross(Z_AXIS)
-      out_prev.normalize!
-      out_curr.normalize!
-      out_prev.length = wall_t
-      out_curr.length = wall_t
-      a1 = p_prev.offset(out_prev)
-      b1 = p_curr.offset(out_curr)
+      p_prev = pts[(i - 1) % count]; p_curr = pts[i]; p_next = pts[(i + 1) % count]
+      d_prev = p_prev.vector_to(p_curr); d_curr = p_curr.vector_to(p_next)
+      d_prev.normalize!; d_curr.normalize!
+      out_prev = d_prev.cross(Z_AXIS); out_curr = d_curr.cross(Z_AXIS)
+      out_prev.normalize!; out_curr.normalize!
+      out_prev.length = wall_t; out_curr.length = wall_t
+      a1 = p_prev.offset(out_prev); b1 = p_curr.offset(out_curr)
       inter = line_intersection_2d(a1, d_prev, b1, d_curr)
       inter ||= p_curr.offset(out_curr)
       outward_pts << inter
@@ -3280,17 +3112,11 @@ HTML
     save_build_data(room_group, data)
 
     set_attrs(room_group, {
-      'UUID' => room_uuid,
-      'النوع' => 'غرفة',
-      'اسم الغرفة' => room_name,
-      'ارتفاع الحائط سم' => wall_h_cm,
-      'سمك الحائط سم' => wall_t_cm,
-      'سمك الأرضية سم' => floor_t_cm,
-      'سمك السقف سم' => ceil_t_cm,
-      'إنشاء أرضية' => create_floor ? 'نعم' : 'لا',
-      'إنشاء سقف' => create_ceiling ? 'نعم' : 'لا',
-      'نمط السقف' => ceiling_pattern,
-      'طريقة حساب السقوط' => data['drop_reference'].to_s,
+      'UUID' => room_uuid, 'النوع' => 'غرفة', 'اسم الغرفة' => room_name,
+      'ارتفاع الحائط سم' => wall_h_cm, 'سمك الحائط سم' => wall_t_cm,
+      'سمك الأرضية سم' => floor_t_cm, 'سمك السقف سم' => ceil_t_cm,
+      'إنشاء أرضية' => create_floor ? 'نعم' : 'لا', 'إنشاء سقف' => create_ceiling ? 'نعم' : 'لا',
+      'نمط السقف' => ceiling_pattern, 'طريقة حساب السقوط' => data['drop_reference'].to_s,
       'تاريخ الإنشاء' => Time.now.strftime('%Y-%m-%d %H:%M')
     })
     room_group.set_attribute(DICT, 'shatras_json', [].to_json)
@@ -3306,52 +3132,35 @@ HTML
         floor_inst.name = ts('الأرضية')
         floor_inst.layer = tag(model, "#{room_name} | #{ts('الأرضية')}")
         set_attrs(floor_inst, {
-          'UUID' => uuid,
-          'Room_UUID' => room_uuid,
-          'النوع' => 'أرضية',
-          'اسم الغرفة' => room_name,
-          'السمك سم' => floor_t_cm
+          'UUID' => uuid, 'Room_UUID' => room_uuid, 'النوع' => 'أرضية',
+          'اسم الغرفة' => room_name, 'السمك سم' => floor_t_cm
         })
       end
     end
     if create_ceiling && ceil_t > 0
-      build_ceiling(model, room_ents, room_name, room_uuid, outward_pts,
-                    pts, wall_h, ceil_t, ceil_t_cm, data)
+      build_ceiling(model, room_ents, room_name, room_uuid, outward_pts, pts, wall_h, ceil_t, ceil_t_cm, data)
     end
     count.times do |i|
       j = (i + 1) % count
       wall_number = format('%02d', i + 1)
       wall_name = "#{ts('حائط')} #{wall_number}"
-      p1 = pts[i]
-      p2 = pts[j]
-      p3 = outward_pts[j]
-      p4 = outward_pts[i]
+      p1 = pts[i]; p2 = pts[j]; p3 = outward_pts[j]; p4 = outward_pts[i]
       wall_def = model.definitions.add("#{room_name}_#{wall_name}_#{stamp}")
       add_prism(wall_def.entities, p1, p2, p3, p4, 0, wall_h)
       wall_inst = room_ents.add_instance(wall_def, Geom::Transformation.new)
       wall_inst.name = wall_name
       wall_inst.layer = tag(model, "#{room_name} | #{wall_name}")
       set_attrs(wall_inst, {
-        'UUID' => uuid,
-        'Room_UUID' => room_uuid,
-        'النوع' => 'حائط',
-        'اسم الغرفة' => room_name,
-        'رقم الحائط' => i + 1,
-        'الاسم' => wall_name,
-        'الارتفاع سم' => wall_h_cm,
-        'السمك سم' => wall_t_cm,
+        'UUID' => uuid, 'Room_UUID' => room_uuid, 'النوع' => 'حائط',
+        'اسم الغرفة' => room_name, 'رقم الحائط' => i + 1, 'الاسم' => wall_name,
+        'الارتفاع سم' => wall_h_cm, 'السمك سم' => wall_t_cm,
         'طول الحائط سم' => p1.distance(p2).to_cm.round(2),
-        'P1' => pt_to_s(p1),
-        'P2' => pt_to_s(p2),
-        'P3' => pt_to_s(p3),
-        'P4' => pt_to_s(p4)
+        'P1' => pt_to_s(p1), 'P2' => pt_to_s(p2), 'P3' => pt_to_s(p3), 'P4' => pt_to_s(p4)
       })
     end
     remove_legacy_source_floor_geometry(pts)
     model.commit_operation
     UI.messagebox(ts('تم بناء الغرفة بنجاح'))
-
-
   rescue => e
     model.abort_operation rescue nil
     UI.messagebox("Error:\n#{e.message}")
@@ -3382,12 +3191,10 @@ HTML
         menu.add_item(ts('⚙️ تعديل الغرفة')) { open_edit_room_dialog(room_group) }
 
         wall_entity = selection.find do |entity|
-          entity.respond_to?(:get_attribute) &&
-            entity.get_attribute(DICT, 'النوع').to_s == 'حائط'
+          entity.respond_to?(:get_attribute) && entity.get_attribute(DICT, 'النوع').to_s == 'حائط'
         end
         beam_entity = selection.find do |entity|
-          entity.respond_to?(:get_attribute) &&
-            entity.get_attribute(DICT, 'النوع').to_s == 'كمر'
+          entity.respond_to?(:get_attribute) && entity.get_attribute(DICT, 'النوع').to_s == 'كمر'
         end
 
         if wall_entity
@@ -3400,25 +3207,13 @@ HTML
       end
     end
 
-    UI.menu('Plugins').add_item(ts('MHD - تعديل غرفة (نقر تفاعلي)')) do
-      activate_room_edit_picker
-    end
-
-    UI.menu('Plugins').add_item(ts('MHD - تعديل حائط ديناميكي (نقر تفاعلي)')) do
-      activate_wall_edit_picker
-    end
-
+    UI.menu('Plugins').add_item(ts('MHD - تعديل غرفة (نقر تفاعلي)')) { activate_room_edit_picker }
+    UI.menu('Plugins').add_item(ts('MHD - تعديل حائط ديناميكي (نقر تفاعلي)')) { activate_wall_edit_picker }
     UI.menu('Plugins').add_separator
-    UI.menu('Plugins').add_item(ts('MHD - إضافة/تعديل كمر (نقر تفاعلي)')) do
-      activate_beam_picker
-    end
-
-    UI.menu('Plugins').add_item(ts('MHD - شطرة الحائط (ضبط الزوايا)')) do
-      activate_shatra_picker
-    end
+    UI.menu('Plugins').add_item(ts('MHD - إضافة/تعديل كمر (نقر تفاعلي)')) { activate_beam_picker }
+    UI.menu('Plugins').add_item(ts('MHD - شطرة الحائط (ضبط الزوايا)')) { activate_shatra_picker }
 
     file_loaded(__FILE__)
-
   end
 end
 
@@ -3450,8 +3245,7 @@ module MHD_RoomBuilder_SafeIntegration_V41
 
   def wall_components(room_group)
     room_group.entities.to_a.select do |e|
-      e.valid? &&
-        e.is_a?(Sketchup::ComponentInstance) &&
+      e.valid? && e.is_a?(Sketchup::ComponentInstance) &&
         e.get_attribute(DICT, 'النوع').to_s == 'حائط'
     end
   end
@@ -3506,7 +3300,6 @@ module MHD_RoomBuilder_SafeIntegration_V41
   def restore_wall_state(room_group, state)
     return false unless state.is_a?(Hash)
     walls = wall_components(room_group)
-
     walls.each do |wall|
       number = wall.get_attribute(DICT, 'رقم الحائط').to_i
       saved = state[number]
@@ -3514,14 +3307,9 @@ module MHD_RoomBuilder_SafeIntegration_V41
       old_uuid = saved['wall_uuid'].to_s
       wall.set_attribute(DICT, 'UUID', old_uuid.empty? ? safe_uuid : old_uuid)
       new_length = wall.get_attribute(DICT, 'طول الحائط سم').to_f
-      openings = normalize_openings_for_new_length(
-        saved['openings'],
-        saved['old_length_cm'],
-        new_length
-      )
+      openings = normalize_openings_for_new_length(saved['openings'], saved['old_length_cm'], new_length)
       wall.set_attribute(DICT, OPENINGS_KEY, JSON.generate(openings))
     end
-
     if opening_engine_available?
       walls.each do |wall|
         number = wall.get_attribute(DICT, 'رقم الحائط').to_i
@@ -3560,11 +3348,9 @@ module MHD_RoomBuilder_SafeIntegration_V41
       f.valid? && f.normal.z.abs > 0.9
     end
     return if faces.length < 2
-
     sorted = faces.sort_by { |f| f.bounds.center.z }
     bottom = sorted.first
     top    = sorted.last
-
     top.reverse!    if top.normal.z < 0
     bottom.reverse! if bottom.normal.z > 0
   rescue
@@ -3576,22 +3362,18 @@ module MHD_RoomBuilder_SafeIntegration_V41
 
     original_sync = ctx.method(:synchronize_room_geometry)
     ctx.define_singleton_method(:synchronize_room_geometry) do |room_group, pts, room_data|
-      MHD_RoomBuilder_SafeIntegration_V41.synchronize_room_geometry_with_state(
-        room_group, pts, room_data, original_sync
-      )
+      MHD_RoomBuilder_SafeIntegration_V41.synchronize_room_geometry_with_state(room_group, pts, room_data, original_sync)
     end
 
     original_floor = ctx.method(:rebuild_room_floor)
     ctx.define_singleton_method(:rebuild_room_floor) do |room_group, outward_pts, floor_t, floor_t_cm, room_name, room_uuid, mat_info = nil|
       result = original_floor.call(room_group, outward_pts, floor_t, floor_t_cm, room_name, room_uuid, mat_info)
-
       room_group.entities.to_a.each do |e|
         next unless e.valid?
         next unless e.is_a?(Sketchup::ComponentInstance)
         next unless e.get_attribute(DICT, 'النوع').to_s == 'أرضية'
         MHD_RoomBuilder_SafeIntegration_V41.fix_floor_faces(e.definition, floor_t)
       end
-
       result
     end
 
@@ -3608,82 +3390,63 @@ module MHD_RoomBuilder_SafeIntegration_V41
 
   def run_apply_shatra(room_group, corner_idx, data, mode, original_apply)
     return false unless room_group && room_group.valid?
-
-    a = data['a_cm'].to_f
-    b = data['b_cm'].to_f
-    diag = data['diagonal_cm'].to_f
+    a = data['a_cm'].to_f; b = data['b_cm'].to_f; diag = data['diagonal_cm'].to_f
     angle = MHD_RoomBuilder_Context.shatra_angle_from_sides(a, b, diag)
-
     unless angle
       UI.messagebox("❌ مقاسات الشطرة غير هندسية.\nلازم القطر يكون أكبر من |#{a} - #{b}| وأصغر من #{a + b}.")
       return false
     end
-
     pts = MHD_RoomBuilder_Context.room_pts_from_group(room_group)
     unless pts && pts.length >= 3
       UI.messagebox('❌ لا يمكن قراءة نقاط الغرفة.')
       return false
     end
-
     existing_shatra = MHD_RoomBuilder_Context.shatra_for_corner(room_group, corner_idx)
     target_uuid = data['uuid'].to_s
     target_uuid = existing_shatra['uuid'].to_s if target_uuid.empty? && existing_shatra
-
     prev_i = (corner_idx - 1) % pts.length
     next_i = (corner_idx + 1) % pts.length
-
-    original_pts_for_corner =
-      if existing_shatra && existing_shatra['original_corner_pts'].is_a?(Array)
-        existing_shatra['original_corner_pts']
-      else
-        [
-          [pts[prev_i].x.to_f, pts[prev_i].y.to_f, pts[prev_i].z.to_f],
-          [pts[corner_idx].x.to_f, pts[corner_idx].y.to_f, pts[corner_idx].z.to_f],
-          [pts[next_i].x.to_f, pts[next_i].y.to_f, pts[next_i].z.to_f]
-        ]
-      end
-
+    original_pts_for_corner = if existing_shatra && existing_shatra['original_corner_pts'].is_a?(Array)
+                                existing_shatra['original_corner_pts']
+                              else
+                                [
+                                  [pts[prev_i].x.to_f, pts[prev_i].y.to_f, pts[prev_i].z.to_f],
+                                  [pts[corner_idx].x.to_f, pts[corner_idx].y.to_f, pts[corner_idx].z.to_f],
+                                  [pts[next_i].x.to_f, pts[next_i].y.to_f, pts[next_i].z.to_f]
+                                ]
+                              end
     if mode == :preview && !MHD_RoomBuilder_Context.has_preview_state?(room_group)
       MHD_RoomBuilder_Context.preview_snapshot(room_group)
     end
-
     new_pts = MHD_RoomBuilder_Context.shatra_adjust_corner_points(pts, corner_idx, angle)
     unless new_pts && MHD_RoomBuilder_Context.polygon_valid_for_wall_edit?(new_pts)
       UI.messagebox('❌ القياسات ستنتج شكلاً هندسياً غير صالح.')
       return false
     end
-
     model = Sketchup.active_model
     room_data = MHD_RoomBuilder_Context.build_data_from_group(room_group) || {}
     room_data = room_data.dup
     old_pts = pts.map(&:clone)
-
     op_name = (mode == :preview) ? 'MHD Shatra Preview' : 'MHD Shatra Apply'
     model.start_operation(op_name, true)
     begin
       MHD_RoomBuilder_Context.remove_legacy_source_floor_geometry(old_pts)
       MHD_RoomBuilder_Context.synchronize_room_geometry(room_group, new_pts, room_data)
-
       shatras = MHD_RoomBuilder_Context.shatras_from_room(room_group)
       shatras.reject! do |s|
-        s['corner_index'].to_i == corner_idx.to_i ||
-          (!target_uuid.empty? && s['uuid'].to_s == target_uuid)
+        s['corner_index'].to_i == corner_idx.to_i || (!target_uuid.empty? && s['uuid'].to_s == target_uuid)
       end
       shatras << {
         'uuid' => (target_uuid.empty? ? safe_uuid : target_uuid),
         'corner_index' => corner_idx.to_i,
-        'a_cm' => a,
-        'b_cm' => b,
-        'diagonal_cm' => diag,
+        'a_cm' => a, 'b_cm' => b, 'diagonal_cm' => diag,
         'angle_deg' => angle,
         'original_corner_pts' => original_pts_for_corner
       }
       MHD_RoomBuilder_Context.save_shatras(room_group, shatras)
       MHD_RoomBuilder_Context.rebuild_all_shatras(room_group)
-
       model.commit_operation
       model.active_view.invalidate
-
       if mode == :apply
         MHD_RoomBuilder_Context.clear_preview_state(room_group) rescue nil
         UI.messagebox("✅ تم تطبيق الشطرة بنجاح\n\n#{MHD_RoomBuilder_Context.shatra_result_text(a, b, diag, angle)}")
@@ -3698,15 +3461,12 @@ module MHD_RoomBuilder_SafeIntegration_V41
 
   def run_delete_shatra(room_group, shatra_uuid, original_delete)
     return false unless room_group && room_group.valid?
-
     uuid_to_delete = shatra_uuid.to_s
     shatras = MHD_RoomBuilder_Context.shatras_from_room(room_group)
     target = shatras.find { |s| s['uuid'].to_s == uuid_to_delete }
     return false unless target
-
     corner_idx = target['corner_index'].to_i
     original_pts = target['original_corner_pts']
-
     model = Sketchup.active_model
     model.start_operation('MHD Delete Shatra', true)
     begin
@@ -3716,22 +3476,18 @@ module MHD_RoomBuilder_SafeIntegration_V41
           n = pts.length
           prev_i = (corner_idx - 1) % n
           next_i = (corner_idx + 1) % n
-
           pts[prev_i]     = Geom::Point3d.new(original_pts[0][0].to_f, original_pts[0][1].to_f, original_pts[0][2].to_f)
           pts[corner_idx] = Geom::Point3d.new(original_pts[1][0].to_f, original_pts[1][1].to_f, original_pts[1][2].to_f)
           pts[next_i]     = Geom::Point3d.new(original_pts[2][0].to_f, original_pts[2][1].to_f, original_pts[2][2].to_f)
-
           room_data = MHD_RoomBuilder_Context.build_data_from_group(room_group) || {}
           old_pts = MHD_RoomBuilder_Context.room_pts_from_group(room_group).map(&:clone)
           MHD_RoomBuilder_Context.remove_legacy_source_floor_geometry(old_pts)
           MHD_RoomBuilder_Context.synchronize_room_geometry(room_group, pts, room_data)
         end
       end
-
       remaining = shatras.reject { |s| s['uuid'].to_s == uuid_to_delete }
       MHD_RoomBuilder_Context.save_shatras(room_group, remaining)
       MHD_RoomBuilder_Context.rebuild_all_shatras(room_group)
-
       model.commit_operation
       model.active_view.invalidate
       UI.messagebox('✅ تم حذف الشطرة وإرجاع الحوائط لحالتها الأصلية')
