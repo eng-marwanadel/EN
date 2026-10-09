@@ -1,15 +1,14 @@
 # encoding: UTF-8
 # ============================================================
-# MHD Room Builder v4.3 — Full Edition with Beam Sync Fix
+# MHD Room Builder v4.4 — Full Edition with Beam Follow Ceiling FIX
 # ============================================================
-# Features:
-#   ✅ Room Builder (Floor, Walls, Ceiling)
-#   ✅ Beams with "Follow Ceiling" feature
-#   ✅ Shatra (wall corner calibration)
-#   ✅ Preview for Shatra
-#   ✅ Floor material preservation
-#   ✅ Auto-sync beams with scene (deleted beams don't come back)
-#   ✅ Hidden shatra lines (no black lines on floor)
+# Changes in v4.4:
+#   🔧 FIXED: Beams with "يتبع السقف = نعم" now ALWAYS follow wall height
+#   🔧 FIXED: rebuild_all_beams always recalculates follow_ceiling elevations
+#   🔧 FIXED: Non-follow beams get clamped if wall shrinks
+#   ➕ Added: force_sync_beams! — force recalc all follow-ceiling beams
+#   ➕ Added: Menu "🔧 MR: Fix Follow-Ceiling Beams"
+#   ➕ Added: Menu "📊 MR: Beam Status"
 # ============================================================
 
 require 'sketchup.rb'
@@ -32,6 +31,7 @@ module MHD_RoomBuilder_Context
   DICT = 'MHD_ROOM_BUILDER'
   PREF_KEY = 'MHD_ROOM_BUILDER_UI'
   LOGO_URL = 'https://mhdesign-eg.com/SKETCHUP/components/logo3.png'
+  VERSION = 'v4.4'
 
   @preview_states = {}
 
@@ -480,7 +480,6 @@ module MHD_RoomBuilder_Context
     end
   end
 
-  # ✅ Capture floor material from TOP face correctly
   def capture_floor_material(room_group)
     room_group.entities.to_a.each do |e|
       next unless e.valid?
@@ -495,7 +494,6 @@ module MHD_RoomBuilder_Context
     nil
   end
 
-  # ✅ Capture floor material info from TOP face correctly
   def capture_floor_material_info(room_group)
     room_group.entities.to_a.each do |e|
       next unless e.valid?
@@ -683,7 +681,7 @@ module MHD_RoomBuilder_Context
   end
 
   # ═══════════════════════════════════════════════════════════════════
-  # ✅ NEW: Beam sync helpers
+  # ✅ BEAM SYNC — v4.4 (FIXED)
   # ═══════════════════════════════════════════════════════════════════
 
   def sync_beams_with_scene(room_group)
@@ -704,24 +702,110 @@ module MHD_RoomBuilder_Context
     synced
   end
 
+  # ✅ v4.4 — Recalculates follow_ceiling beams' elevation based on wall height
   def recalculate_beam_elevations(room_group, old_wall_h_cm, new_wall_h_cm)
     beams = beams_from_room(room_group)
     return if beams.empty?
-    delta = (new_wall_h_cm - old_wall_h_cm).to_f
-    return if delta.abs < 0.001
+
+    new_h = new_wall_h_cm.to_f
+    return if new_h <= 0
+
     changed = false
     beams.each do |spec|
-      next unless spec['follow_ceiling'] == true || spec['follow_ceiling'].to_s == 'true'
+      follow = (spec['follow_ceiling'] == true || spec['follow_ceiling'].to_s == 'true')
       height_cm = spec['height_cm'].to_f
-      top_offset = spec['top_offset_cm'].to_f
-      new_elevation = new_wall_h_cm - top_offset - height_cm
-      new_elevation = [[new_elevation, 0.0].max, [new_wall_h_cm - height_cm, 0.0].max].min
-      if (spec['elevation_cm'].to_f - new_elevation).abs > 0.001
-        spec['elevation_cm'] = new_elevation.round(2)
-        changed = true
+      next if height_cm <= 0
+
+      if follow
+        # ✅ Follow-ceiling beams: derive elevation from wall height
+        top_offset = spec['top_offset_cm'].to_f
+        top_offset = [top_offset, 0.0].max
+        new_elevation = new_h - top_offset - height_cm
+        max_elevation = [new_h - height_cm, 0.0].max
+        new_elevation = [[new_elevation, 0.0].max, max_elevation].min
+        if (spec['elevation_cm'].to_f - new_elevation).abs > 0.001
+          spec['elevation_cm'] = new_elevation.round(3)
+          changed = true
+        end
+        # Update top_offset if it was invalid
+        if (spec['top_offset_cm'].to_f - top_offset).abs > 0.001
+          spec['top_offset_cm'] = top_offset.round(3)
+          changed = true
+        end
+      else
+        # ✅ Non-follow beams: clamp if they end up above the wall
+        max_elevation = [new_h - height_cm, 0.0].max
+        if spec['elevation_cm'].to_f > max_elevation
+          spec['elevation_cm'] = max_elevation.round(3)
+          changed = true
+        end
       end
     end
     save_beams(room_group, beams) if changed
+  end
+
+  # ✅ v4.4 — Force sync: recalculates AND rebuilds beams in scene
+  def force_sync_beams!(room_group)
+    return 0 unless room_group && room_group.valid?
+
+    beams = beams_from_room(room_group)
+    return 0 if beams.empty?
+
+    # Get current wall heights
+    walls = walls_in_room(room_group)
+    return 0 if walls.empty?
+
+    wall_h_map = {}
+    walls.each do |w|
+      num = w.get_attribute(DICT, 'رقم الحائط').to_i
+      h = w.get_attribute(DICT, 'الارتفاع سم').to_f
+      wall_h_map[num] = h
+    end
+
+    # Recalculate all beam elevations
+    changed_count = 0
+    beams.each do |spec|
+      wall_num = spec['wall_number'].to_i
+      wall_h = wall_h_map[wall_num].to_f
+      next if wall_h <= 0
+
+      height_cm = spec['height_cm'].to_f
+      next if height_cm <= 0
+
+      follow = (spec['follow_ceiling'] == true || spec['follow_ceiling'].to_s == 'true')
+
+      if follow
+        top_offset = spec['top_offset_cm'].to_f
+        top_offset = [top_offset, 0.0].max
+        new_elevation = wall_h - top_offset - height_cm
+        max_elevation = [wall_h - height_cm, 0.0].max
+        new_elevation = [[new_elevation, 0.0].max, max_elevation].min
+        if (spec['elevation_cm'].to_f - new_elevation).abs > 0.001
+          spec['elevation_cm'] = new_elevation.round(3)
+          changed_count += 1
+        end
+      else
+        max_elevation = [wall_h - height_cm, 0.0].max
+        if spec['elevation_cm'].to_f > max_elevation
+          spec['elevation_cm'] = max_elevation.round(3)
+          changed_count += 1
+        end
+      end
+    end
+
+    # Save and rebuild
+    save_beams(room_group, beams)
+    rebuild_all_beams(room_group)
+    changed_count
+  end
+
+  def walls_in_room(room_group)
+    room_group.entities.to_a.select do |e|
+      e.valid? && e.is_a?(Sketchup::ComponentInstance) &&
+        e.get_attribute(DICT, 'النوع').to_s == 'حائط'
+    end
+  rescue
+    []
   end
 
   # ═══════════════════════════════════════════════════════════
@@ -767,9 +851,10 @@ module MHD_RoomBuilder_Context
 
       floor_mat_info = capture_floor_material_info(room_group)
 
-      # ✅ Sync beams first (removes deleted ones)
+      # ✅ STEP 1: Sync beams (removes deleted ones)
       sync_beams_with_scene(room_group)
-      # ✅ Recalculate elevations for follow_ceiling beams
+
+      # ✅ STEP 2: Recalculate elevations BEFORE wall resize (uses new height directly)
       recalculate_beam_elevations(room_group, wall_h_old, wall_h_new) if wall_h_changed
 
       if name_changed
@@ -832,7 +917,9 @@ module MHD_RoomBuilder_Context
         end
       end
 
-      rebuild_all_beams(room_group)
+      # ✅ STEP 3: Force sync beams again AFTER everything — the ultimate safety net
+      force_sync_beams!(room_group)
+
       rebuild_all_shatras(room_group) if respond_to?(:rebuild_all_shatras)
       save_build_data(room_group, new_data)
       room_group.set_attribute(DICT, 'اسم الغرفة', name_new)
@@ -1278,7 +1365,9 @@ module MHD_RoomBuilder_Context
     room_group.set_attribute(DICT, 'إنشاء أرضية', floor_on ? 'نعم' : 'لا')
     room_group.set_attribute(DICT, 'إنشاء سقف', ceiling_on ? 'نعم' : 'لا')
 
-    rebuild_all_beams(room_group) if respond_to?(:rebuild_all_beams)
+    # ✅ Force sync again — safety net
+    force_sync_beams!(room_group) if respond_to?(:force_sync_beams!)
+
     rebuild_all_shatras(room_group) if respond_to?(:rebuild_all_shatras)
     model.active_view.invalidate
     true
@@ -1559,7 +1648,6 @@ updateBig();
     nil
   end
 
-  # ✅ Shatra guide with FULLY hidden edges
   def build_shatra_guide(room_group, shatra)
     pts = room_pts_from_group(room_group)
     return nil unless pts && pts.length >= 3
@@ -1584,7 +1672,6 @@ updateBig();
     e1 = grp.entities.add_line(c, pa)
     e2 = grp.entities.add_line(c, pb)
     diag = grp.entities.add_line(pa, pb)
-    # ✅ Hide ALL edges (fix black lines on floor)
     [e1, e2, diag].compact.each do |edge|
       begin
         edge.hidden = true
@@ -1647,7 +1734,6 @@ updateBig();
       save_room_pts(room_group, pts)
       synchronize_room_geometry(room_group, pts, data)
       rebuild_all_shatras(room_group) if respond_to?(:rebuild_all_shatras)
-      rebuild_all_beams(room_group) if respond_to?(:rebuild_all_beams)
       model.commit_operation
       model.active_view.invalidate
       true
@@ -2037,7 +2123,7 @@ calc();
   end
 
   # ═══════════════════════════════════════════════════════════════════
-  # BEAMS ENGINE — With Follow Ceiling + Auto Sync
+  # BEAMS ENGINE — v4.4 FIXED
   # ═══════════════════════════════════════════════════════════════════
 
   def beams_from_room(room_group)
@@ -2129,8 +2215,8 @@ calc();
       top_offset = [top_offset, 0.0].max
       elevation_cm = info['wall_h_cm'] - top_offset - height_cm
       elevation_cm = [[elevation_cm, 0.0].max, [info['wall_h_cm'] - height_cm, 0.0].max].min
-      spec['elevation_cm'] = elevation_cm.round(2)
-      spec['top_offset_cm'] = top_offset.round(2)
+      spec['elevation_cm'] = elevation_cm.round(3)
+      spec['top_offset_cm'] = top_offset.round(3)
     end
 
     if height_cm > info['wall_h_cm']
@@ -2200,20 +2286,44 @@ calc();
     beam_inst
   end
 
-  # ✅ Rebuild all beams with auto-sync (deleted beams don't come back)
+  # ✅ v4.4 — ALWAYS recalculates follow_ceiling beams (single source of truth)
   def rebuild_all_beams(room_group)
-    # Sync beams with scene first (remove orphaned from JSON)
     beams = sync_beams_with_scene(room_group)
     delete_room_beams(room_group)
     return true if beams.empty?
 
     model = Sketchup.active_model
-    room_group.set_attribute(DICT, 'beams_json', beams.to_json)
 
     beams.group_by { |b| b['wall_number'].to_i }.each do |wall_number, wall_beams|
       wall = find_wall_in_room(room_group, wall_number)
       next unless wall && wall.valid?
+
+      # ✅ Get current wall height
+      current_wall_h = wall.get_attribute(DICT, 'الارتفاع سم').to_f
+      next if current_wall_h <= 0
+
       wall_beams.each do |spec|
+        # ✅ ALWAYS recalculate follow_ceiling beams based on current wall height
+        follow = (spec['follow_ceiling'] == true || spec['follow_ceiling'].to_s == 'true')
+        h = spec['height_cm'].to_f
+        if h > 0
+          if follow
+            top_off = spec['top_offset_cm'].to_f
+            top_off = [top_off, 0.0].max
+            new_elev = current_wall_h - top_off - h
+            new_elev = [[new_elev, 0.0].max, [current_wall_h - h, 0.0].max].min
+            spec['elevation_cm'] = new_elev.round(3)
+            spec['top_offset_cm'] = top_off.round(3)
+            spec['wall_h_at_build'] = current_wall_h.round(3)
+          else
+            # Clamp non-follow beams that would exceed wall height
+            max_elev = [current_wall_h - h, 0.0].max
+            if spec['elevation_cm'].to_f > max_elev
+              spec['elevation_cm'] = max_elev.round(3)
+            end
+          end
+        end
+
         begin
           build_single_beam(model, room_group, wall, spec)
         rescue => e
@@ -2242,7 +2352,6 @@ calc();
     find_room_group(entity)
   end
 
-  # ✅ Beam dialog with follow-ceiling + auto-sync fix
   def open_beam_dialog(target, edit_uuid = nil)
     room_group = beam_room_from_entity(target)
     unless room_group
@@ -2250,7 +2359,6 @@ calc();
       return
     end
 
-    # ✅ Sync first (remove orphans)
     sync_beams_with_scene(room_group)
 
     is_beam = target.is_a?(Sketchup::ComponentInstance) &&
@@ -2575,6 +2683,119 @@ updateInfo();
   end
 
   # ═══════════════════════════════════════════════════════════════════
+  # ✅ NEW v4.4 — Beam Utility Menu Commands
+  # ═══════════════════════════════════════════════════════════════════
+
+  def fix_all_follow_ceiling_beams!(verbose = true)
+    model = Sketchup.active_model
+    total_fixed = 0
+    total_rooms = 0
+
+    model.entities.to_a.each do |e|
+      next unless e.is_a?(Sketchup::Group)
+      next unless e.get_attribute(DICT, 'النوع').to_s == 'غرفة'
+
+      total_rooms += 1
+      fixed = force_sync_beams!(e)
+      total_fixed += fixed
+    end
+
+    if verbose
+      if total_rooms == 0
+        UI.messagebox("⚠️ لا توجد غرف MHD في الموديل")
+      elsif total_fixed == 0
+        UI.messagebox("✅ كل الكمرات في المكان الصح — لم يتم تعديل أي كمر\n\n📊 عدد الغرف: #{total_rooms}")
+      else
+        UI.messagebox("✅ تم إصلاح #{total_fixed} كمر في #{total_rooms} غرفة")
+      end
+    end
+
+    total_fixed
+  rescue => e
+    UI.messagebox("❌ #{e.message}")
+    0
+  end
+
+  def beam_status_report
+    model = Sketchup.active_model
+    report = []
+    report << "═" * 70
+    report << "  📊 BEAM STATUS REPORT — #{VERSION}"
+    report << "═" * 70
+
+    model.entities.to_a.each do |e|
+      next unless e.is_a?(Sketchup::Group)
+      next unless e.get_attribute(DICT, 'النوع').to_s == 'غرفة'
+
+      room_name = e.get_attribute(DICT, 'اسم الغرفة').to_s
+      beams = beams_from_room(e)
+      next if beams.empty?
+
+      report << ""
+      report << "🏠 #{room_name} (#{beams.length} كمرات)"
+
+      walls_h = {}
+      walls_in_room(e).each do |w|
+        num = w.get_attribute(DICT, 'رقم الحائط').to_i
+        walls_h[num] = w.get_attribute(DICT, 'الارتفاع سم').to_f
+      end
+
+      beams.each do |b|
+        wall_num = b['wall_number'].to_i
+        wall_h = walls_h[wall_num].to_f
+        follow = (b['follow_ceiling'] == true || b['follow_ceiling'].to_s == 'true')
+        h = b['height_cm'].to_f
+        elev = b['elevation_cm'].to_f
+        top_off = b['top_offset_cm'].to_f
+
+        expected = follow ? (wall_h - top_off - h) : elev
+        diff = elev - expected
+        status = if diff.abs < 0.05
+                   "✅ OK"
+                 elsif follow
+                   "❌ OUT (يحتاج #{expected.round(2)})"
+                 else
+                   "⚠️  CLAMPED"
+                 end
+
+        report << "   [#{b['number']}] حائط #{wall_num} | #{follow ? '🔄 يتبع' : '📌 ثابت'} | " \
+                  "Z=#{elev.round(2)} | H=#{h.round(2)} | سقف=#{wall_h.round(2)} | #{status}"
+      end
+    end
+
+    report << ""
+    report << "═" * 70
+
+    text = report.join("\n")
+    puts text
+
+    # Show in a scrollable dialog
+    dlg = UI::HtmlDialog.new(
+      dialog_title: "📊 Beam Status Report",
+      preferences_key: "#{PREF_KEY}_BEAM_STATUS",
+      scrollable: true, resizable: true,
+      width: 750, height: 650,
+      style: UI::HtmlDialog::STYLE_DIALOG
+    )
+    safe = text.gsub('&','&amp;').gsub('<','&lt;').gsub('>','&gt;')
+    html = <<-HTML
+<!DOCTYPE html>
+<html lang="ar" dir="rtl"><head><meta charset="UTF-8">
+<style>
+body{margin:0;background:#07131d;color:#eaf4f8;font-family:Consolas,monospace;font-size:12px;padding:14px}
+pre{white-space:pre-wrap;line-height:1.7;background:#0b1b27;padding:14px;border-radius:10px;border:1px solid #1c3342}
+</style></head><body>
+<h2 style="font-family:Arial;margin-bottom:10px">📊 BEAM STATUS REPORT</h2>
+<pre>#{safe}</pre>
+</body></html>
+    HTML
+    dlg.set_html(html)
+    dlg.show
+  rescue => e
+    UI.messagebox("❌ #{e.message}")
+  end
+
+  # ═══════════════════════════════════════════════════════════════════
   # HTML Dialog (Room Builder)
   # ═══════════════════════════════════════════════════════════════════
 
@@ -2647,7 +2868,7 @@ button{height:40px;border-radius:10px;font-size:14px;font-weight:900;cursor:poin
 <img class="logo" src="#{LOGO_URL}">
 <div class="head-text">
 <div class="title-main">بناء الحوائط</div>
-<div class="subtitle">MHDESIGN<br>Room Builder V4.3</div>
+<div class="subtitle">MHDESIGN<br>Room Builder #{VERSION}</div>
 </div>
 </div>
 <div class="wrap">
@@ -3200,6 +3421,10 @@ HTML
     dialog_input
   end
 
+  # ═══════════════════════════════════════════════════════════════════
+  # Menu Setup
+  # ═══════════════════════════════════════════════════════════════════
+
   unless file_loaded?(__FILE__)
     UI.add_context_menu_handler do |menu|
       model = Sketchup.active_model
@@ -3237,11 +3462,22 @@ HTML
       end
     end
 
-    UI.menu('Plugins').add_item(ts('MHD - تعديل غرفة (نقر تفاعلي)')) { activate_room_edit_picker }
-    UI.menu('Plugins').add_item(ts('MHD - تعديل حائط ديناميكي (نقر تفاعلي)')) { activate_wall_edit_picker }
-    UI.menu('Plugins').add_separator
-    UI.menu('Plugins').add_item(ts('MHD - إضافة/تعديل كمر (نقر تفاعلي)')) { activate_beam_picker }
-    UI.menu('Plugins').add_item(ts('MHD - شطرة الحائط (ضبط الزوايا)')) { activate_shatra_picker }
+    plugins_menu = UI.menu('Plugins')
+
+    plugins_menu.add_item(ts('MHD - تعديل غرفة (نقر تفاعلي)')) { activate_room_edit_picker }
+    plugins_menu.add_item(ts('MHD - تعديل حائط ديناميكي (نقر تفاعلي)')) { activate_wall_edit_picker }
+    plugins_menu.add_separator
+    plugins_menu.add_item(ts('MHD - إضافة/تعديل كمر (نقر تفاعلي)')) { activate_beam_picker }
+    plugins_menu.add_item(ts('MHD - شطرة الحائط (ضبط الزوايا)')) { activate_shatra_picker }
+
+    # ✅ v4.4 — Beam utility menu
+    plugins_menu.add_separator
+    plugins_menu.add_item('🔧 MR: Fix Follow-Ceiling Beams') do
+      MHD_RoomBuilder_Context.fix_all_follow_ceiling_beams!(true)
+    end
+    plugins_menu.add_item('📊 MR: Beam Status Report') do
+      MHD_RoomBuilder_Context.beam_status_report
+    end
 
     file_loaded(__FILE__)
   end
@@ -3524,4 +3760,13 @@ module MHD_RoomBuilder_SafeIntegration_V41
       false
     end
   end
+end
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# تشغيل الـ Safe Integration
+# ═══════════════════════════════════════════════════════════════════════════════
+begin
+  MHD_RoomBuilder_SafeIntegration_V41.install!
+rescue => e
+  puts "⚠️ Safe integration: #{e.message}"
 end
