@@ -1,17 +1,18 @@
 # encoding: UTF-8
 # MHD Room Builder v4.0 - Smart Edit Engine
 # SketchUp Ruby Plugin
+# Fixed: Beam-Wall Alignment (beam back flush against interior wall face)
 
 require 'sketchup.rb'
 require 'json'
 require 'tmpdir'
 require 'zlib'
 begin
-require File.join(__dir__, 'language', 'language_engine')
+  require File.join(__dir__, 'language', 'language_engine')
 rescue LoadError
 end
 begin
-require 'securerandom'
+  require 'securerandom'
 rescue LoadError
 end
 
@@ -637,7 +638,6 @@ def rebuild_room_floor(room_group, outward_pts, floor_t, floor_t_cm, room_name, 
   floor_face.reverse! if floor_face.normal.z < 0
   floor_face.pushpull(-floor_t)
 
-  # تأكيد اتجاه الأوجه الأفقية (إصلاح مشكلة اللون الغامق)
   floor_def.entities.grep(Sketchup::Face).each do |face|
     next unless face.valid?
     next unless face.normal.z.abs > 0.9
@@ -2121,14 +2121,22 @@ def wall_info(wall)
   return nil unless wall && wall.valid?
   p1s = wall.get_attribute(DICT, 'P1').to_s
   p2s = wall.get_attribute(DICT, 'P2').to_s
+  p3s = wall.get_attribute(DICT, 'P3').to_s
+  p4s = wall.get_attribute(DICT, 'P4').to_s
   a = p1s.split('|').map(&:to_f)
   b = p2s.split('|').map(&:to_f)
+  c = p3s.split('|').map(&:to_f)
+  d = p4s.split('|').map(&:to_f)
   return nil unless a.length >= 3 && b.length >= 3
   p1 = Geom::Point3d.new(a[0], a[1], a[2])
   p2 = Geom::Point3d.new(b[0], b[1], b[2])
+  p3 = c.length >= 3 ? Geom::Point3d.new(c[0], c[1], c[2]) : nil
+  p4 = d.length >= 3 ? Geom::Point3d.new(d[0], d[1], d[2]) : nil
   {
     'p1' => p1,
     'p2' => p2,
+    'p3' => p3,
+    'p4' => p4,
     'length_cm' => p1.distance(p2).to_cm,
     'wall_h_cm' => wall.get_attribute(DICT, 'الارتفاع سم').to_f,
     'wall_t_cm' => wall.get_attribute(DICT, 'السمك سم').to_f,
@@ -2182,6 +2190,13 @@ def delete_room_beams(room_group)
   end
 end
 
+# ============================================================
+# ✅ build_single_beam — النواة المُصلحة
+# ------------------------------------------------------------
+# الكمر يتمركز على الوش الداخلي (P1–P2) للحائط،
+# ويمتد جوّه الغرفة بعمقه الكامل (depth_cm).
+# بهذا لا يدخل أي جزء من الكمر داخل الحائط.
+# ============================================================
 def build_single_beam(model, room_group, wall, spec)
   info = wall_info(wall)
   return nil unless info
@@ -2205,23 +2220,37 @@ def build_single_beam(model, room_group, wall, spec)
 
   p1 = info['p1']
   p2 = info['p2']
+
+  # الاتجاه من P1 إلى P2
   d = p1.vector_to(p2)
   length = d.length
   raise 'طول الحائط غير صالح لإنشاء الكمر' if length <= 0.1.mm
   d.normalize!
-  n = d.cross(Z_AXIS)
-  n.normalize!
-  half_depth = depth_cm.cm / 2.0
+
+  # ✅ الاتجاه العمودي على الحائط (خارج الغرفة) — نفس منطق compute_outward_pts
+  outward = d.cross(Z_AXIS)
+  return nil if outward.length < 0.0001
+  outward.normalize!
+
+  # ✅ اتجاه "الداخل" للغرفة هو عكس الاتجاه الخارجي
+  inward = Geom::Vector3d.new(-outward.x, -outward.y, 0)
+  inward.normalize!
 
   base_z = p1.z + elevation_cm.cm
-  a = p1.offset(n, half_depth)
-  b = p2.offset(n, half_depth)
-  c = p2.offset(n, -half_depth)
-  dpt = p1.offset(n, -half_depth)
+  depth_actual = depth_cm.cm
 
-  a.z = base_z
-  b.z = base_z
-  c.z = base_z
+  # ✅ النقاط الأربع:
+  # ظهر الكمر عند P1–P2 (الوش الداخلي للحائط)
+  # ووشّ الكمر الأمامي جوّه الغرفة بمقدار depth_cm
+  a   = p1.clone                              # ظهر يسار
+  b   = p2.clone                              # ظهر يمين
+  c   = p2.offset(inward, depth_actual)       # وشّ يمين
+  dpt = p1.offset(inward, depth_actual)       # وشّ يسار
+
+  # توحيد Z
+  a.z   = base_z
+  b.z   = base_z
+  c.z   = base_z
   dpt.z = base_z
 
   definition = model.definitions.add(
@@ -2386,7 +2415,7 @@ button{height:42px;border:0;border-radius:9px;font-size:14px;font-weight:900;cur
     <div class="row"><label>ارتفاع الكمر سم</label><input id="height" type="number" min="0.1" step="0.1" value="#{defaults['height_cm']}"></div>
     <div class="row"><label>عمق الكمر سم</label><input id="depth" type="number" min="0.1" step="0.1" value="#{defaults['depth_cm']}"></div>
     <div class="row"><label>ارتفاع من الأرض سم</label><input id="elevation" type="number" min="0" step="0.1" value="#{defaults['elevation_cm']}"></div>
-    <div class="hint">الكمر يمتد تلقائياً بطول الحائط بالكامل، ويُعاد بناؤه تلقائياً عند تعديل ارتفاع أو سمك الحائط.</div>
+    <div class="hint">الكمر يمتد تلقائياً بطول الحائط بالكامل، وظهره ملزوق في الوش الداخلي للحائط، ووشّه داخل الغرفة بعمق الكمر.</div>
   </div>
   <div class="footer">
     <button class="save" onclick="submitData()">#{is_beam ? 'حفظ التعديل' : 'إضافة الكمر'}</button>
@@ -3342,9 +3371,6 @@ end
 
 # =========================================================
 # MHD SAFE ARCHITECTURAL INTEGRATION PATCH v5.0
-# ---------------------------------------------------------
-# حل جذري بمشكلة prepend مع extend self:
-# نستخدم define_singleton_method بدل prepend
 # =========================================================
 
 module MHD_RoomBuilder_SafeIntegration_V41
@@ -3466,7 +3492,6 @@ module MHD_RoomBuilder_SafeIntegration_V41
     false
   end
 
-  # ============ Hook: synchronize_room_geometry ============
   def synchronize_room_geometry_with_state(room_group, pts, room_data, original_method)
     wall_state = capture_wall_state(room_group)
     result = original_method.call(room_group, pts, room_data)
@@ -3476,7 +3501,6 @@ module MHD_RoomBuilder_SafeIntegration_V41
     raise e
   end
 
-  # ============ Fix floor face orientation ============
   def fix_floor_faces(floor_def, floor_t)
     return unless floor_def && floor_def.respond_to?(:entities)
     faces = floor_def.entities.grep(Sketchup::Face).select do |f|
@@ -3488,17 +3512,15 @@ module MHD_RoomBuilder_SafeIntegration_V41
     bottom = sorted.first
     top    = sorted.last
 
-    top.reverse!    if top.normal.z < 0   # Top must point UP
-    bottom.reverse! if bottom.normal.z > 0 # Bottom must point DOWN
+    top.reverse!    if top.normal.z < 0
+    bottom.reverse! if bottom.normal.z > 0
   rescue
     nil
   end
 
-  # ============ Install patch ============
   def install!
     ctx = MHD_RoomBuilder_Context
 
-    # ---- 1) Override synchronize_room_geometry ----
     original_sync = ctx.method(:synchronize_room_geometry)
     ctx.define_singleton_method(:synchronize_room_geometry) do |room_group, pts, room_data|
       MHD_RoomBuilder_SafeIntegration_V41.synchronize_room_geometry_with_state(
@@ -3506,12 +3528,10 @@ module MHD_RoomBuilder_SafeIntegration_V41
       )
     end
 
-    # ---- 2) Override rebuild_room_floor (floor color fix) ----
     original_floor = ctx.method(:rebuild_room_floor)
     ctx.define_singleton_method(:rebuild_room_floor) do |room_group, outward_pts, floor_t, floor_t_cm, room_name, room_uuid, mat_info = nil|
       result = original_floor.call(room_group, outward_pts, floor_t, floor_t_cm, room_name, room_uuid, mat_info)
 
-      # إصلاح اتجاه الأوجه بعد إعادة البناء
       room_group.entities.to_a.each do |e|
         next unless e.valid?
         next unless e.is_a?(Sketchup::ComponentInstance)
@@ -3522,13 +3542,11 @@ module MHD_RoomBuilder_SafeIntegration_V41
       result
     end
 
-    # ---- 3) Override apply_shatra_calibration ----
     original_apply = ctx.method(:apply_shatra_calibration)
     ctx.define_singleton_method(:apply_shatra_calibration) do |room_group, corner_idx, data, mode = :apply|
       MHD_RoomBuilder_SafeIntegration_V41.run_apply_shatra(room_group, corner_idx, data, mode, original_apply)
     end
 
-    # ---- 4) Override delete_shatra ----
     original_delete = ctx.method(:delete_shatra)
     ctx.define_singleton_method(:delete_shatra) do |room_group, shatra_uuid|
       MHD_RoomBuilder_SafeIntegration_V41.run_delete_shatra(room_group, shatra_uuid, original_delete)
@@ -3672,6 +3690,3 @@ module MHD_RoomBuilder_SafeIntegration_V41
     end
   end
 end
-
-# تثبيت الـPatch
-MHD_RoomBuilder_SafeIntegration_V41.install!
