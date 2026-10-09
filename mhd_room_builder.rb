@@ -1,7 +1,15 @@
 # encoding: UTF-8
 # ============================================================
-# MHD Room Builder v4.2 - Full Code with Beam Follow-Ceiling
-# الكود الكامل بعد إضافة ميزة "يتبع ارتفاع السقف" للكمر
+# MHD Room Builder v4.3 — Full Edition with Beam Sync Fix
+# ============================================================
+# Features:
+#   ✅ Room Builder (Floor, Walls, Ceiling)
+#   ✅ Beams with "Follow Ceiling" feature
+#   ✅ Shatra (wall corner calibration)
+#   ✅ Preview for Shatra
+#   ✅ Floor material preservation
+#   ✅ Auto-sync beams with scene (deleted beams don't come back)
+#   ✅ Hidden shatra lines (no black lines on floor)
 # ============================================================
 
 require 'sketchup.rb'
@@ -26,6 +34,10 @@ module MHD_RoomBuilder_Context
   LOGO_URL = 'https://mhdesign-eg.com/SKETCHUP/components/logo3.png'
 
   @preview_states = {}
+
+  # ═══════════════════════════════════════════════════════════
+  # Helpers
+  # ═══════════════════════════════════════════════════════════
 
   def ts(text)
     source = text.to_s
@@ -320,8 +332,7 @@ module MHD_RoomBuilder_Context
     definition = model.definitions.add("تأثير_إضاءة_ناعم_#{Time.now.to_i}_#{rand(99999)}")
     count = path_pts.length
     count.times do |i|
-      a = path_pts[i]
-      b = path_pts[(i + 1) % count]
+      a = path_pts[i]; b = path_pts[(i + 1) % count]
       next if a.distance(b) < 1.mm
       start_z = direction == :up ? source_z + 0.3.mm : source_z - 0.3.mm
       finish_z = direction == :up ? source_z + glow_size : source_z - glow_size
@@ -672,8 +683,27 @@ module MHD_RoomBuilder_Context
   end
 
   # ═══════════════════════════════════════════════════════════════════
-  # ✅ NEW: Recalculate beam elevations when wall height changes
+  # ✅ NEW: Beam sync helpers
   # ═══════════════════════════════════════════════════════════════════
+
+  def sync_beams_with_scene(room_group)
+    beams = beams_from_room(room_group)
+    return [] if beams.empty?
+
+    scene_uuids = room_group.entities.to_a.select do |e|
+      e.valid? && e.is_a?(Sketchup::ComponentInstance) &&
+        e.get_attribute(DICT, 'النوع').to_s == 'كمر'
+    end.map { |e| e.get_attribute(DICT, 'UUID').to_s }.reject(&:empty?)
+
+    synced = beams.select { |b| scene_uuids.include?(b['uuid'].to_s) }
+
+    if synced.length != beams.length
+      save_beams(room_group, synced)
+      puts "🔄 مزامنة الكمرات: تم حذف #{beams.length - synced.length} كمر محذوف يدوياً"
+    end
+    synced
+  end
+
   def recalculate_beam_elevations(room_group, old_wall_h_cm, new_wall_h_cm)
     beams = beams_from_room(room_group)
     return if beams.empty?
@@ -694,6 +724,9 @@ module MHD_RoomBuilder_Context
     save_beams(room_group, beams) if changed
   end
 
+  # ═══════════════════════════════════════════════════════════
+  # Smart Room Update
+  # ═══════════════════════════════════════════════════════════
   def apply_smart_room_update(room_group, new_data)
     old_data = build_data_from_group(room_group) || {}
     pts = room_pts_from_group(room_group)
@@ -734,7 +767,9 @@ module MHD_RoomBuilder_Context
 
       floor_mat_info = capture_floor_material_info(room_group)
 
-      # ✅ Update beam elevations if wall height changed
+      # ✅ Sync beams first (removes deleted ones)
+      sync_beams_with_scene(room_group)
+      # ✅ Recalculate elevations for follow_ceiling beams
       recalculate_beam_elevations(room_group, wall_h_old, wall_h_new) if wall_h_changed
 
       if name_changed
@@ -1198,7 +1233,8 @@ module MHD_RoomBuilder_Context
 
     floor_mat_info = capture_floor_material_info(room_group)
 
-    # ✅ Recalculate beam elevations if wall height changed
+    # ✅ Sync beams before rebuild
+    sync_beams_with_scene(room_group) if respond_to?(:sync_beams_with_scene)
     recalculate_beam_elevations(room_group, old_wall_h, wall_h_cm) if (old_wall_h - wall_h_cm).abs > 0.001
 
     delete_room_parts(room_group, 'حائط')
@@ -1215,6 +1251,7 @@ module MHD_RoomBuilder_Context
       build_ceiling(model, room_group.entities, name, room_uuid, outward, pts, wall_h_cm.cm, ceil_t_cm.cm, ceil_t_cm, data)
     end
 
+    # ✅ Update shatra original points
     shatras = shatras_from_room(room_group)
     unless shatras.empty?
       shatras.each do |s|
@@ -1390,16 +1427,14 @@ input:focus,select:focus{outline:2px solid #39a245;background:#0d1b25}
 <div class="big"><span id="length_big">#{v['length_cm']}</span> سم</div>
 <div class="row"><label>طول الحائط سم</label><div class="length-wrap"><button class="step" onclick="step(-1)">−</button><input id="length" type="number" step="0.1" min="1" value="#{v['length_cm']}" oninput="syncRange()"><button class="step" onclick="step(1)">+</button></div></div>
 <input id="length_range" class="range" type="range" min="1" max="2000" step="1" value="#{v['length_cm']}" oninput="syncInput()">
-<div class="hint">تقدر تزود أو تقلل طول الحائط، وتحدد نقطة التثبيت، وتختار هل التعديل يؤثر على الحائط المحدد فقط أم يحافظ على تماثل الغرفة.</div>
 </div>
 <div class="card">
 <div class="row"><label>نقطة التثبيت</label><select id="anchor"><option value="start">تثبيت بداية الحائط</option><option value="end">تثبيت نهاية الحائط</option><option value="center">تثبيت المنتصف</option></select></div>
-<div class="row"><label>نمط التعديل</label><select id="edit_mode"><option value="single">🎯 حائط واحد فقط — لا تحرك المقابل</option><option value="auto">🧠 ذكي — حافظ على استقامة الغرفة</option><option value="opposite">↔️ الحائط + المقابل معًا</option></select></div>
+<div class="row"><label>نمط التعديل</label><select id="edit_mode"><option value="single">🎯 حائط واحد فقط</option><option value="auto">🧠 ذكي</option><option value="opposite">↔️ الحائط + المقابل</option></select></div>
 <div class="row"><label>ارتفاع الحائط سم</label><input id="height" type="number" step="0.1" min="1" value="#{v['height_cm']}"></div>
 <div class="row"><label>سمك الحائط سم</label><input id="thickness" type="number" step="0.1" min="0.1" value="#{v['thickness_cm']}"></div>
 <div class="row"><label>اسم الحائط</label><input id="name" type="text" value="#{safe_name}"></div>
 </div>
-<div class="card"><b>⚡ تحديث ديناميكي</b><div class="hint">بعد الحفظ يتم إعادة حساب شكل الغرفة، الأرضية، السقف، والحوائط. الكمرات المفعّل عليها "يتبع السقف" ستتحرك تلقائياً.</div></div>
 </div>
 <div class="footer"><button class="btn save" onclick="submitData()">💾 تطبيق التعديل</button><button class="btn cancel" onclick="sketchup.cancel()">إغلاق</button></div>
 </div>
@@ -1524,6 +1559,7 @@ updateBig();
     nil
   end
 
+  # ✅ Shatra guide with FULLY hidden edges
   def build_shatra_guide(room_group, shatra)
     pts = room_pts_from_group(room_group)
     return nil unless pts && pts.length >= 3
@@ -1548,8 +1584,14 @@ updateBig();
     e1 = grp.entities.add_line(c, pa)
     e2 = grp.entities.add_line(c, pb)
     diag = grp.entities.add_line(pa, pb)
+    # ✅ Hide ALL edges (fix black lines on floor)
     [e1, e2, diag].compact.each do |edge|
-      begin; edge.soft = true if edge.respond_to?(:soft=); rescue; end
+      begin
+        edge.hidden = true
+        edge.soft = true
+        edge.smooth = true
+      rescue
+      end
     end
     set_attrs(grp, {
       'UUID' => (shatra['uuid'].to_s.empty? ? uuid : shatra['uuid'].to_s),
@@ -1778,7 +1820,7 @@ html,body{margin:0;padding:0;height:100%;width:100%;background:#07131d;color:#ea
 ::-webkit-scrollbar-track{background:#07131d}
 ::-webkit-scrollbar-thumb{background:#1d3444;border-radius:20px;border:2px solid #07131d}
 .app{height:100vh;display:flex;flex-direction:column;background:#07131d}
-.scroll{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;padding:14px 14px 6px;scroll-behavior:smooth}
+.scroll{flex:1 1 auto;overflow-y:auto;overflow-x:hidden;padding:14px 14px 6px}
 .title{text-align:center;font-size:22px;font-weight:900;margin-bottom:4px}
 .sub{text-align:center;color:#8eabbc;font-size:12px;margin:4px 0 12px;line-height:1.55}
 .card{background:#0b1b27;border:1px solid #1c3342;border-radius:12px;padding:12px;margin-bottom:10px}
@@ -1792,10 +1834,9 @@ input:focus{outline:2px solid #39a245;background:#0d1b25}
 .info{font-size:12px;color:#b4cbd7;line-height:1.8;background:#091923;border-radius:10px;padding:10px;white-space:pre-line}
 .hint{font-size:11px;color:#8eabbc;line-height:1.65}
 .badge{display:inline-block;background:#17384a;color:#cfe9f6;padding:4px 10px;border-radius:999px;font-size:11px;margin-bottom:6px}
-.footer{flex:0 0 auto;display:grid;grid-template-columns:1.5fr 1fr;gap:8px;padding:10px 14px;border-top:1px solid #1c3342;background:#07131d;box-shadow:0 -4px 12px rgba(0,0,0,.35)}
+.footer{flex:0 0 auto;display:grid;grid-template-columns:1.5fr 1fr;gap:8px;padding:10px 14px;border-top:1px solid #1c3342;background:#07131d}
 .footer2{flex:0 0 auto;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:0 14px 12px;background:#07131d}
-button{border:0;border-radius:9px;font-weight:900;font-size:13px;cursor:pointer;transition:filter .15s,transform .05s}
-button:hover{filter:brightness(1.08)}
+button{border:0;border-radius:9px;font-weight:900;font-size:13px;cursor:pointer}
 .btnMain{height:44px;font-size:14px}
 .save{background:#4de37a;color:#061923}
 .preview{background:#2c6b8a;color:#fff}
@@ -1822,9 +1863,6 @@ button:hover{filter:brightness(1.08)}
   <div class="card">
     <div class="badge">معلومات الشطرة الحالية</div>
     <div id="info" class="info">#{safe_info}</div>
-  </div>
-  <div class="card">
-    <div class="hint">💡 <b>معاينة</b>: تُطبّق الشطرة مؤقتاً على المجسم لتشوف الشكل النهائي قبل الحفظ.</div>
   </div>
 </div>
 <div class="footer">
@@ -1999,7 +2037,7 @@ calc();
   end
 
   # ═══════════════════════════════════════════════════════════════════
-  # BEAMS ENGINE — with Follow-Ceiling Feature
+  # BEAMS ENGINE — With Follow Ceiling + Auto Sync
   # ═══════════════════════════════════════════════════════════════════
 
   def beams_from_room(room_group)
@@ -2073,7 +2111,6 @@ calc();
     end
   end
 
-  # ✅ build_single_beam with follow-ceiling logic
   def build_single_beam(model, room_group, wall, spec)
     info = wall_info(wall)
     return nil unless info
@@ -2087,7 +2124,6 @@ calc();
     raise 'عمق الكمر لازم يكون أكبر من صفر' if depth_cm <= 0
     raise 'ارتفاع الكمر من الأرض لا يمكن أن يكون سالباً' if elevation_cm < 0
 
-    # ✅ If follow_ceiling is ON, recalculate elevation from top_offset
     if follow_ceiling
       top_offset = spec['top_offset_cm'].to_f
       top_offset = [top_offset, 0.0].max
@@ -2097,7 +2133,6 @@ calc();
       spec['top_offset_cm'] = top_offset.round(2)
     end
 
-    # Clamp to wall height
     if height_cm > info['wall_h_cm']
       height_cm = info['wall_h_cm']
       elevation_cm = 0.0
@@ -2108,10 +2143,7 @@ calc();
       spec['elevation_cm'] = elevation_cm
     end
 
-    p1 = info['p1']
-    p2 = info['p2']
-    inward = info['inward']
-
+    p1 = info['p1']; p2 = info['p2']; inward = info['inward']
     unless inward
       d = p1.vector_to(p2)
       d.normalize! if d.length > 0.001
@@ -2124,8 +2156,7 @@ calc();
     base_z = p1.z + elevation_cm.cm
     depth_actual = depth_cm.cm
 
-    a   = p1.clone
-    b   = p2.clone
+    a   = p1.clone; b   = p2.clone
     c   = p2.offset(inward, depth_actual)
     dpt = p1.offset(inward, depth_actual)
     a.z = base_z; b.z = base_z; c.z = base_z; dpt.z = base_z
@@ -2169,12 +2200,16 @@ calc();
     beam_inst
   end
 
+  # ✅ Rebuild all beams with auto-sync (deleted beams don't come back)
   def rebuild_all_beams(room_group)
-    beams = beams_from_room(room_group)
+    # Sync beams with scene first (remove orphaned from JSON)
+    beams = sync_beams_with_scene(room_group)
     delete_room_beams(room_group)
     return true if beams.empty?
+
     model = Sketchup.active_model
     room_group.set_attribute(DICT, 'beams_json', beams.to_json)
+
     beams.group_by { |b| b['wall_number'].to_i }.each do |wall_number, wall_beams|
       wall = find_wall_in_room(room_group, wall_number)
       next unless wall && wall.valid?
@@ -2207,13 +2242,16 @@ calc();
     find_room_group(entity)
   end
 
-  # ✅ Enhanced beam dialog with follow-ceiling toggle
+  # ✅ Beam dialog with follow-ceiling + auto-sync fix
   def open_beam_dialog(target, edit_uuid = nil)
     room_group = beam_room_from_entity(target)
     unless room_group
       UI.messagebox(ts('لم يتم العثور على غرفة MHD مرتبطة بهذا العنصر.'))
       return
     end
+
+    # ✅ Sync first (remove orphans)
+    sync_beams_with_scene(room_group)
 
     is_beam = target.is_a?(Sketchup::ComponentInstance) &&
               target.get_attribute(DICT, 'النوع').to_s == 'كمر'
@@ -2300,16 +2338,16 @@ input[type=number],input[type=text]{width:100%;height:36px;border:0;border-radiu
 input:focus{outline:2px solid #39a245}
 .hint{font-size:11px;color:#8eabbc;line-height:1.55;margin-top:6px;background:#091923;border-radius:8px;padding:8px}
 .switch-row{display:grid;grid-template-columns:155px 1fr;gap:8px;align-items:center;margin-bottom:10px}
-.toggle{height:36px;background:#111f2a;border-radius:8px;outline:1px solid #243d4f;display:flex;align-items:center;justify-content:space-between;padding:0 10px;cursor:pointer;user-select:none;color:#fff;font-size:13px;transition:.15s}
+.toggle{height:36px;background:#111f2a;border-radius:8px;outline:1px solid #243d4f;display:flex;align-items:center;justify-content:space-between;padding:0 10px;cursor:pointer;user-select:none;color:#fff;font-size:13px}
 .toggle.on{background:#0f2a1b;outline:2px solid #39a245}
-.toggle .dot{width:18px;height:18px;border-radius:50%;background:#355467;border:1px solid #57798a;transition:.15s}
+.toggle .dot{width:18px;height:18px;border-radius:50%;background:#355467;border:1px solid #57798a}
 .toggle.on .dot{background:#39a245;border-color:#39a245}
 .info-box{background:#091923;border-radius:8px;padding:10px;font-size:12px;color:#b4cbd7;line-height:1.9;margin-top:8px}
 .info-box b{color:#4de37a}
 .follow-options{display:none;background:#0f2a1b;border-radius:8px;padding:10px;margin-top:6px;border:1px solid #1e4a35}
 .follow-options.active{display:block}
 .footer{flex:0 0 auto;display:grid;grid-template-columns:1.6fr 1fr 0.7fr;gap:8px;padding:10px 14px;border-top:1px solid #1c3342;background:#07131d}
-button{height:42px;border:0;border-radius:9px;font-size:13px;font-weight:900;cursor:pointer;transition:.15s}
+button{height:42px;border:0;border-radius:9px;font-size:13px;font-weight:900;cursor:pointer}
 button:hover{filter:brightness(1.08)}
 .save{background:#4de37a;color:#061923}
 .close{background:#0b1b27;color:#fff;border:1px solid #243d4f}
@@ -2358,7 +2396,6 @@ button:hover{filter:brightness(1.08)}
       رقم الكمر: <b>#{number}</b>
     </div>
   </div>
-  <div class="hint">الكمر يمتد تلقائياً بطول الحائط بالكامل، وظهره ملزوق في الوش الداخلي، ووشّه داخل الغرفة بعمق الكمر.</div>
 </div>
 <div class="footer">
   <button class="save" onclick="submitData()">#{is_beam ? '💾 حفظ التعديل' : '➕ إضافة الكمر'}</button>
@@ -2538,7 +2575,7 @@ updateInfo();
   end
 
   # ═══════════════════════════════════════════════════════════════════
-  # HTML Dialog Content (Room Builder)
+  # HTML Dialog (Room Builder)
   # ═══════════════════════════════════════════════════════════════════
 
   def html_dialog_content(values)
@@ -2610,7 +2647,7 @@ button{height:40px;border-radius:10px;font-size:14px;font-weight:900;cursor:poin
 <img class="logo" src="#{LOGO_URL}">
 <div class="head-text">
 <div class="title-main">بناء الحوائط</div>
-<div class="subtitle">تم تصميم هذه الأداة بواسطة MHDESIGN<br>Room Builder V4.2</div>
+<div class="subtitle">MHDESIGN<br>Room Builder V4.3</div>
 </div>
 </div>
 <div class="wrap">
@@ -2655,45 +2692,44 @@ button{height:40px;border-radius:10px;font-size:14px;font-weight:900;cursor:poin
 <option value="wall_is_finish" #{v['drop_reference']=='wall_is_finish' ? 'selected' : ''}>ارتفاع الحائط بعد السقوط</option>
 </select>
 </div>
-<div id="drop_reference_hint" class="hint">اختر هل قيمة ارتفاع الحائط تمثل السقف الأساسي أم الارتفاع الصافي أسفل الجزء الساقط.</div>
 
-    <div id="opts_flat" class="conditional"><div class="hint">سقف كامل بمستوى واحد حسب ارتفاع الحائط وسمك السقف.</div></div>
-    <div id="opts_perimeter" class="conditional">
-      <div class="field-row"><label>عرض الإطار سم</label><input id="perimeter_width" type="number" step="0.1" value="#{v['perimeter_width']}"></div>
-      <div class="field-row"><label>نزول الإطار سم</label><input id="perimeter_drop" type="number" step="0.1" value="#{v['perimeter_drop']}"></div>
-    </div>
-    <div id="opts_center" class="conditional">
-      <div class="field-row"><label>ارتداد المنتصف سم</label><input id="center_inset" type="number" step="0.1" value="#{v['center_inset']}"></div>
-      <div class="field-row"><label>نزول المنتصف سم</label><input id="center_drop" type="number" step="0.1" value="#{v['center_drop']}"></div>
-    </div>
-    <div id="opts_center_hidden_led" class="conditional">
-      <div class="field-row"><label>ارتداد الجزيرة سم</label><input id="center_led_inset" type="number" step="0.1" value="#{v['center_led_inset']}"></div>
-      <div class="field-row"><label>مقدار السقوط سم</label><input id="center_led_drop" type="number" step="0.1" value="#{v['center_led_drop']}"></div>
-      <div class="field-row"><label>سمك لوح الجزيرة سم</label><input id="center_led_thickness" type="number" step="0.1" value="#{v['center_led_thickness']}"></div>
-    </div>
-    <div id="opts_double_hidden_led" class="conditional">
-      <div class="field-row"><label>عرض بيت النور سم</label><input id="combo_cove_width" type="number" step="0.1" value="#{v['combo_cove_width']}"></div>
-      <div class="field-row"><label>نزول بيت النور سم</label><input id="combo_cove_drop" type="number" step="0.1" value="#{v['combo_cove_drop']}"></div>
-      <div class="field-row"><label>بروز اليد للداخل سم</label><input id="combo_cove_lip_width" type="number" step="0.1" value="#{v['combo_cove_lip_width']}"></div>
-      <div class="field-row"><label>سمك اليد سم</label><input id="combo_cove_lip_height" type="number" step="0.1" value="#{v['combo_cove_lip_height']}"></div>
-      <div class="field-row"><label>ارتداد الجزيرة سم</label><input id="combo_center_inset" type="number" step="0.1" value="#{v['combo_center_inset']}"></div>
-      <div class="field-row"><label>نزول الجزيرة سم</label><input id="combo_center_drop" type="number" step="0.1" value="#{v['combo_center_drop']}"></div>
-      <div class="field-row"><label>سمك لوح الجزيرة سم</label><input id="combo_center_thickness" type="number" step="0.1" value="#{v['combo_center_thickness']}"></div>
-    </div>
-    <div id="opts_strips" class="conditional">
-      <div class="field-row"><label>اتجاه الشرائط</label><select id="strip_direction"><option value="longitudinal" #{longitudinal_value?(v['strip_direction']) ? 'selected' : ''}>طولي</option><option value="transverse" #{longitudinal_value?(v['strip_direction']) ? '' : 'selected'}>عرضي</option></select></div>
-      <div class="field-row"><label>عدد الشرائط</label><input id="strip_count" type="number" min="1" max="20" step="1" value="#{v['strip_count']}"></div>
-      <div class="field-row"><label>عرض الشريط سم</label><input id="strip_width" type="number" step="0.1" value="#{v['strip_width']}"></div>
-      <div class="field-row"><label>المسافة بينهم سم</label><input id="strip_gap" type="number" step="0.1" value="#{v['strip_gap']}"></div>
-      <div class="field-row"><label>نزول الشرائط سم</label><input id="strip_drop" type="number" step="0.1" value="#{v['strip_drop']}"></div>
-    </div>
-    <div id="opts_hidden_cove" class="conditional">
-      <div class="field-row"><label>عرض بيت النور سم</label><input id="cove_inset" type="number" step="0.1" value="#{v['cove_inset']}"></div>
-      <div class="field-row"><label>مقدار النزول سم</label><input id="cove_drop" type="number" step="0.1" value="#{v['cove_drop']}"></div>
-      <div class="field-row"><label>بروز اليد للداخل سم</label><input id="cove_lip_width" type="number" step="0.1" value="#{v['cove_lip_width']}"></div>
-      <div class="field-row"><label>سمك اليد سم</label><input id="cove_lip_height" type="number" step="0.1" value="#{v['cove_lip_height']}"></div>
-    </div>
-  </div>
+<div id="opts_flat" class="conditional"><div class="hint">سقف كامل بمستوى واحد.</div></div>
+<div id="opts_perimeter" class="conditional">
+  <div class="field-row"><label>عرض الإطار سم</label><input id="perimeter_width" type="number" step="0.1" value="#{v['perimeter_width']}"></div>
+  <div class="field-row"><label>نزول الإطار سم</label><input id="perimeter_drop" type="number" step="0.1" value="#{v['perimeter_drop']}"></div>
+</div>
+<div id="opts_center" class="conditional">
+  <div class="field-row"><label>ارتداد المنتصف سم</label><input id="center_inset" type="number" step="0.1" value="#{v['center_inset']}"></div>
+  <div class="field-row"><label>نزول المنتصف سم</label><input id="center_drop" type="number" step="0.1" value="#{v['center_drop']}"></div>
+</div>
+<div id="opts_center_hidden_led" class="conditional">
+  <div class="field-row"><label>ارتداد الجزيرة سم</label><input id="center_led_inset" type="number" step="0.1" value="#{v['center_led_inset']}"></div>
+  <div class="field-row"><label>مقدار السقوط سم</label><input id="center_led_drop" type="number" step="0.1" value="#{v['center_led_drop']}"></div>
+  <div class="field-row"><label>سمك لوح الجزيرة سم</label><input id="center_led_thickness" type="number" step="0.1" value="#{v['center_led_thickness']}"></div>
+</div>
+<div id="opts_double_hidden_led" class="conditional">
+  <div class="field-row"><label>عرض بيت النور سم</label><input id="combo_cove_width" type="number" step="0.1" value="#{v['combo_cove_width']}"></div>
+  <div class="field-row"><label>نزول بيت النور سم</label><input id="combo_cove_drop" type="number" step="0.1" value="#{v['combo_cove_drop']}"></div>
+  <div class="field-row"><label>بروز اليد للداخل سم</label><input id="combo_cove_lip_width" type="number" step="0.1" value="#{v['combo_cove_lip_width']}"></div>
+  <div class="field-row"><label>سمك اليد سم</label><input id="combo_cove_lip_height" type="number" step="0.1" value="#{v['combo_cove_lip_height']}"></div>
+  <div class="field-row"><label>ارتداد الجزيرة سم</label><input id="combo_center_inset" type="number" step="0.1" value="#{v['combo_center_inset']}"></div>
+  <div class="field-row"><label>نزول الجزيرة سم</label><input id="combo_center_drop" type="number" step="0.1" value="#{v['combo_center_drop']}"></div>
+  <div class="field-row"><label>سمك لوح الجزيرة سم</label><input id="combo_center_thickness" type="number" step="0.1" value="#{v['combo_center_thickness']}"></div>
+</div>
+<div id="opts_strips" class="conditional">
+  <div class="field-row"><label>اتجاه الشرائط</label><select id="strip_direction"><option value="longitudinal" #{longitudinal_value?(v['strip_direction']) ? 'selected' : ''}>طولي</option><option value="transverse" #{longitudinal_value?(v['strip_direction']) ? '' : 'selected'}>عرضي</option></select></div>
+  <div class="field-row"><label>عدد الشرائط</label><input id="strip_count" type="number" min="1" max="20" step="1" value="#{v['strip_count']}"></div>
+  <div class="field-row"><label>عرض الشريط سم</label><input id="strip_width" type="number" step="0.1" value="#{v['strip_width']}"></div>
+  <div class="field-row"><label>المسافة بينهم سم</label><input id="strip_gap" type="number" step="0.1" value="#{v['strip_gap']}"></div>
+  <div class="field-row"><label>نزول الشرائط سم</label><input id="strip_drop" type="number" step="0.1" value="#{v['strip_drop']}"></div>
+</div>
+<div id="opts_hidden_cove" class="conditional">
+  <div class="field-row"><label>عرض بيت النور سم</label><input id="cove_inset" type="number" step="0.1" value="#{v['cove_inset']}"></div>
+  <div class="field-row"><label>مقدار النزول سم</label><input id="cove_drop" type="number" step="0.1" value="#{v['cove_drop']}"></div>
+  <div class="field-row"><label>بروز اليد للداخل سم</label><input id="cove_lip_width" type="number" step="0.1" value="#{v['cove_lip_width']}"></div>
+  <div class="field-row"><label>سمك اليد سم</label><input id="cove_lip_height" type="number" step="0.1" value="#{v['cove_lip_height']}"></div>
+</div>
+</div>
 </div>
 <div id="light_group" class="group">
   <div class="group-title collapsible" onclick="collapseGroup(this)"><span>تأثير الإضاءة</span><span class="arrow">▼</span></div>
@@ -2736,9 +2772,6 @@ const pattern = val('ceiling_pattern');
 document.querySelectorAll('.conditional').forEach(el => el.classList.remove('active'));
 const box = document.getElementById('opts_' + pattern);
 if(box) box.classList.add('active');
-const dropped = pattern !== 'flat';
-document.getElementById('drop_reference_row').style.display = dropped ? 'grid' : 'none';
-document.getElementById('drop_reference_hint').style.display = dropped ? 'block' : 'none';
 }
 function updateLight(){
 const on = document.getElementById('light_enabled').classList.contains('on');
@@ -2841,7 +2874,6 @@ HTML
     drop_reference = data['drop_reference'].to_s
     drop_reference = 'below_wall' unless %w[below_wall wall_is_finish].include?(drop_reference)
     base_z = (pattern != 'flat' && drop_reference == 'wall_is_finish') ? wall_h + selected_drop : wall_h
-    common['طريقة حساب السقوط'] = drop_reference
 
     add_poly_component(model, room_ents, ts('السقف الأساسي'), nil, outer_pts, base_z, ceil_t, common.merge('الجزء' => 'أساسي'))
 
@@ -2854,7 +2886,7 @@ HTML
       inner = offset_polygon(room_pts, width)
       if polygon_usable?(inner)
         add_ring_component(model, room_ents, ts('السقف الساقط المحيطي'), nil, outer_pts, inner, base_z - drop, drop,
-                           common.merge('الجزء' => 'إطار محيطي', 'عرض الإطار سم' => data['perimeter_width'].to_f, 'مقدار النزول سم' => data['perimeter_drop'].to_f))
+                           common.merge('الجزء' => 'إطار محيطي', 'عرض الإطار سم' => data['perimeter_width'].to_f))
         light_reference = { kind: :perimeter, source_pts: room_pts, distance: [width - data['light_inset'].to_f.cm, 0.2.cm].max, underside_z: base_z - drop, strips: [] }
       end
     when 'center'
@@ -2863,7 +2895,7 @@ HTML
       center = offset_polygon(room_pts, inset)
       if polygon_usable?(center)
         add_poly_component(model, room_ents, ts('السقف الساقط الأوسط'), nil, center, base_z - drop, drop,
-                           common.merge('الجزء' => 'منتصف ساقط', 'الارتداد سم' => data['center_inset'].to_f, 'مقدار النزول سم' => data['center_drop'].to_f))
+                           common.merge('الجزء' => 'منتصف ساقط'))
         light_reference = { kind: :perimeter, source_pts: room_pts, distance: inset + data['light_inset'].to_f.cm, underside_z: base_z - drop, strips: [] }
       end
     when 'center_hidden_led'
@@ -2881,7 +2913,7 @@ HTML
         led_inner = offset_polygon(island, led_inset + led_width)
         support = offset_polygon(island, led_inset + led_width + 2.cm)
         add_poly_component(model, room_ents, ts('جزيرة السقف الساقطة'), nil, island, panel_bottom_z, panel_thickness,
-                           common.merge('الجزء' => 'جزيرة ساقطة بليد مخفي', 'الارتداد سم' => data['center_led_inset'].to_f, 'مقدار النزول سم' => data['center_led_drop'].to_f, 'سمك لوح الجزيرة سم' => data['center_led_thickness'].to_f))
+                           common.merge('الجزء' => 'جزيرة ساقطة بليد مخفي'))
         if polygon_usable?(support) && base_z > panel_top_z
           add_poly_component(model, room_ents, ts('قلب تثبيت الجزيرة'), nil, support, panel_top_z, base_z - panel_top_z, common.merge('الجزء' => 'قلب تثبيت مخفي'))
         end
@@ -2901,9 +2933,9 @@ HTML
       if polygon_usable?(box_inner) && polygon_usable?(hand_inner)
         box_bottom_z = base_z - cove_drop
         add_ring_component(model, room_ents, ts('صندوق بيت النور المدمج'), nil, outer_pts, box_inner, box_bottom_z, cove_drop,
-                           common.merge('الجزء' => 'بيت نور محيطي مدمج', 'عرض بيت النور سم' => data['combo_cove_width'].to_f, 'مقدار النزول سم' => data['combo_cove_drop'].to_f))
+                           common.merge('الجزء' => 'بيت نور محيطي مدمج'))
         add_ring_component(model, room_ents, ts('اليد المخفية المحيطية'), nil, box_inner, hand_inner, box_bottom_z, cove_hand_thickness,
-                           common.merge('الجزء' => 'يد إضاءة محيطية مخفية', 'بروز اليد سم' => data['combo_cove_lip_width'].to_f, 'سمك اليد سم' => data['combo_cove_lip_height'].to_f))
+                           common.merge('الجزء' => 'يد إضاءة محيطية مخفية'))
         led_width = [data['light_width'].to_f.cm, 0.3.cm].max
         cove_led_inner = offset_polygon(box_inner, led_width)
         if polygon_usable?(cove_led_inner)
@@ -2924,7 +2956,7 @@ HTML
         island_led_inner = offset_polygon(island, led_inset + led_width)
         support = offset_polygon(island, led_inset + led_width + 2.cm)
         add_poly_component(model, room_ents, ts('الجزيرة الساقطة المدمجة'), nil, island, panel_bottom_z, panel_thickness,
-                           common.merge('الجزء' => 'جزيرة وسط بليد مخفي', 'الارتداد سم' => data['combo_center_inset'].to_f, 'مقدار النزول سم' => data['combo_center_drop'].to_f, 'سمك اللوح سم' => data['combo_center_thickness'].to_f))
+                           common.merge('الجزء' => 'جزيرة وسط بليد مخفي'))
         if polygon_usable?(support) && base_z > panel_top_z
           add_poly_component(model, room_ents, ts('قلب تثبيت الجزيرة المدمجة'), nil, support, panel_top_z, base_z - panel_top_z, common.merge('الجزء' => 'قلب تثبيت مخفي'))
         end
@@ -2938,7 +2970,7 @@ HTML
       drop = selected_drop
       strips.each_with_index do |strip_pts, index|
         add_poly_component(model, room_ents, format(ts('شريط السقف %02d'), index + 1), nil, strip_pts, base_z - drop, drop,
-                           common.merge('الجزء' => 'شريط', 'رقم الشريط' => index + 1, 'مقدار النزول سم' => data['strip_drop'].to_f))
+                           common.merge('الجزء' => 'شريط', 'رقم الشريط' => index + 1))
       end
       light_reference = { kind: :strips, underside_z: base_z - drop, strips: strips }
     when 'hidden_cove'
@@ -2951,9 +2983,9 @@ HTML
       if polygon_usable?(box_inner) && polygon_usable?(hand_inner)
         box_bottom_z = base_z - drop
         add_ring_component(model, room_ents, ts('صندوق بيت النور المحيطي'), nil, outer_pts, box_inner, box_bottom_z, drop,
-                           common.merge('الجزء' => 'صندوق بيت نور محيطي', 'عرض بيت النور سم' => data['cove_inset'].to_f, 'مقدار النزول سم' => data['cove_drop'].to_f))
+                           common.merge('الجزء' => 'صندوق بيت نور محيطي'))
         add_ring_component(model, room_ents, ts('اليد المخفية'), nil, box_inner, hand_inner, box_bottom_z, [hand_thickness, drop * 0.35].min,
-                           common.merge('الجزء' => 'يد إضاءة مخفية', 'بروز اليد سم' => data['cove_lip_width'].to_f, 'سمك اليد سم' => data['cove_lip_height'].to_f))
+                           common.merge('الجزء' => 'يد إضاءة مخفية'))
         led_width = [data['light_width'].to_f.cm, 0.3.cm].max
         led_inner = offset_polygon(box_inner, led_width)
         light_reference = { kind: :direct, outer: box_inner, inner: led_inner, underside_z: box_bottom_z + [hand_thickness, drop * 0.35].min, glow_surface: :horizontal, glow_path: box_inner, strips: [] }
@@ -3006,8 +3038,7 @@ HTML
     groove_mat = led_material(model, color, true)
     attrs = {
       'Room_UUID' => room_uuid, 'اسم الغرفة' => room_name,
-      'عرض المجرى سم' => data['light_width'].to_f, 'عمق المجرى سم' => data['light_depth'].to_f,
-      'لون الإضاءة' => color, 'شدة الإضاءة %' => glow_intensity, 'حجم انتشار الإضاءة سم' => data['glow_size'].to_f
+      'لون الإضاءة' => color, 'شدة الإضاءة %' => glow_intensity
     }
     if ref[:kind] == :strips
       ref[:strips].each_with_index do |poly, index|
@@ -3116,8 +3147,7 @@ HTML
       'ارتفاع الحائط سم' => wall_h_cm, 'سمك الحائط سم' => wall_t_cm,
       'سمك الأرضية سم' => floor_t_cm, 'سمك السقف سم' => ceil_t_cm,
       'إنشاء أرضية' => create_floor ? 'نعم' : 'لا', 'إنشاء سقف' => create_ceiling ? 'نعم' : 'لا',
-      'نمط السقف' => ceiling_pattern, 'طريقة حساب السقوط' => data['drop_reference'].to_s,
-      'تاريخ الإنشاء' => Time.now.strftime('%Y-%m-%d %H:%M')
+      'نمط السقف' => ceiling_pattern, 'تاريخ الإنشاء' => Time.now.strftime('%Y-%m-%d %H:%M')
     })
     room_group.set_attribute(DICT, 'shatras_json', [].to_json)
     room_group.set_attribute(DICT, 'beams_json', [].to_json)
@@ -3228,11 +3258,7 @@ module MHD_RoomBuilder_SafeIntegration_V41
   OPENINGS_KEY = 'OPENINGS_JSON'
 
   def safe_uuid
-    if defined?(SecureRandom)
-      SecureRandom.uuid
-    else
-      "#{Time.now.to_i}-#{rand(999999)}"
-    end
+    defined?(SecureRandom) ? SecureRandom.uuid : "#{Time.now.to_i}-#{rand(999999)}"
   end
 
   def opening_engine_available?
