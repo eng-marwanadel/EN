@@ -1,0 +1,361 @@
+{
+  "users": [
+    {
+      "email": "MARWAN",
+      "password": "MARWAN",
+      "device_id": "45d67b90-ceac-4e90-aa9e-c720192a6bbe",
+      "expiry_date": "2029-08-31",
+      "active": true
+    },
+    {
+      "email": "rody",
+      "password": "rody",
+      "device_id": "a6de12da-1e97-447e-b5c5-f727afb45966",
+      "expiry_date": "2126-08-31",
+      "active": true
+    },
+    {
+      "email": "noureen",
+      "password": "noureen",
+      "device_id": "d745dea4-80a0-42f9-8de8-9d815db79f14",
+      "expiry_date": "2126-08-31",
+      "active": true
+    },
+    {
+      "email": "dina",
+      "password": "dina",
+      "device_id": "123",
+      "expiry_date": "2126-08-31",
+      "active": true
+    },
+    {
+      "email": "MARO",
+      "password": "MARO",
+      "device_id": "bc3f1973-da5a-4e28-a6ea-9e8c5674c4b9",
+      "expiry_date": "2126-08-31",
+      "active": true
+    },
+    {
+      "email": "MARO1",
+      "password": "MARO1",
+      "device_id": "bd25b514-37b0-4c26-950d-bb95e76af74f",
+      "expiry_date": "2126-08-31",
+      "active": true
+    },
+    {
+      "email": "user6",
+      "password": "pass6",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user7",
+      "password": "pass7",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user8",
+      "password": "pass8",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user9",
+      "password": "pass9",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user10",
+      "password": "pass10",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user11",
+      "password": "pass11",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user12",
+      "password": "pass12",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user13",
+      "password": "pass13",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user14",
+      "password": "pass14",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user15",
+      "password": "pass15",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user16",
+      "password": "pass16",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user17",
+      "password": "pass17",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user18",
+      "password": "pass18",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user19",
+      "password": "pass19",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user20",
+      "password": "pass20",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user21",
+      "password": "pass21",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user22",
+      "password": "pass22",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user23",
+      "password": "pass23",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user24",
+      "password": "pass24",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user25",
+      "password": "pass25",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user26",
+      "password": "pass26",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user27",
+      "password": "pass27",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user28",
+      "password": "pass28",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user29",
+      "password": "pass29",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user30",
+      "password": "pass30",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user31",
+      "password": "pass31",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user32",
+      "password": "pass32",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user33",
+      "password": "pass33",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user34",
+      "password": "pass34",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user35",
+      "password": "pass35",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user36",
+      "password": "pass36",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user37",
+      "password": "pass37",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user38",
+      "password": "pass38",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user39",
+      "password": "pass39",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user40",
+      "password": "pass40",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user41",
+      "password": "pass41",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user42",
+      "password": "pass42",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user43",
+      "password": "pass43",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user44",
+      "password": "pass44",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user45",
+      "password": "pass45",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user46",
+      "password": "pass46",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user47",
+      "password": "pass47",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user48",
+      "password": "pass48",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user49",
+      "password": "pass49",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    },
+    {
+      "email": "user50",
+      "password": "pass50",
+      "device_id": "123",
+      "expiry_date": "2030-12-31",
+      "active": true
+    }
+  ]
+}
