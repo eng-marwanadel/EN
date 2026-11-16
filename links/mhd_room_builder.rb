@@ -61,7 +61,7 @@ unless defined?(MHDESIGN_ResponsiveHeaderUI::CSS)
       }
     CSS
     BRAND = <<~'HTML'.freeze
-      <div class="mhd-ref-brand"><picture><source media="(max-width: 620px)" srcset="https://mhdesign-eg.com/SKETCHUP022/skp/mhdesign-logo-v.png" width="1162" height="1030"><img class="mhd-ref-logo" alt="MHDESIGN" width="1600" height="533" src="https://mhdesign-eg.com/SKETCHUP022/skp/mhdesign-logo.png"></picture></div>
+      <div class="mhd-ref-brand"><picture><source media="(max-width: 620px)" srcset="https://mhdesign-eg.com/SKETCHUP022/skp/mhdesign-logo-v.png" width="1162" height="1030"><img class="mhd-ref-logo" alt="MHDESIGN" width="1600" height="533" src="https://raw.githubusercontent.com/eng-marwanadel/EN/refs/heads/main/links/Teal-MRDesign-Monogram-Logo-1.png"></picture></div>
       <div class="mhd-ref-art" aria-hidden="true"><svg class="workspace-icon " aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="17" rx="1"/><path d="M12 3v17M9 10v3m6-3v3M6 20v2m12-2v2"/></svg></div>
       <script>
         document.addEventListener('DOMContentLoaded', function () {
