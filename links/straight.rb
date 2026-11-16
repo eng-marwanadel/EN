@@ -46,7 +46,7 @@ module MHDESIGN
     TITLE = 'MHDESIGN - تصميم الدريسنج'.freeze
     PREF_KEY = 'MHDESIGN_DRESSING_DESIGNER_V2'.freeze
     VERSION = '10.54.89-TECH-PREMIUM-THEME'.freeze
-    LOGO_URL = 'https://raw.githubusercontent.com/eng-marwanadel/EN/refs/heads/main/links/logo3.png'.freeze
+    LOGO_URL = 'https://raw.githubusercontent.com/eng-marwanadel/EN/refs/heads/main/links/Teal-MRDesign-Monogram-Logo-1.png'.freeze
     PART_SUFFIX = 'BASE_UNIT_1'.freeze
     BADGE_ARABIC = {
       'MAIN_CARCASS'=>'الشاسيه الرئيسي','PARTITION'=>'قاطع','SHELF'=>'رف',

@@ -124,7 +124,7 @@ module MHD_RoomBuilder_Context
   MENU_BUILD = 'بناء الحوائط'
   DICT = 'MHD_ROOM_BUILDER'
   PREF_KEY = 'MHD_ROOM_BUILDER_UI'
-  LOGO_URL = 'https://raw.githubusercontent.com/eng-marwanadel/EN/refs/heads/main/links/logo3.png'
+  LOGO_URL = 'https://raw.githubusercontent.com/eng-marwanadel/EN/refs/heads/main/links/Teal-MRDesign-Monogram-Logo-1.png'
 
   # -------------------------
   # Helpers
@@ -1669,7 +1669,7 @@ module MHDESIGN
 
     DIALOG_TITLE   = MHDESIGN_SHOP_LANG.key('SHOP_DIALOG_TITLE', 'MHDESIGN - Shop Drawing').freeze
     MENU_TITLE     = MHDESIGN_SHOP_LANG.key('SHOP_MENU_TITLE', 'إنشاء الشوب دروينج').freeze
-    LOGO_URL       = 'https://raw.githubusercontent.com/eng-marwanadel/EN/refs/heads/main/links/logo3.png'.freeze
+    LOGO_URL       = 'https://raw.githubusercontent.com/eng-marwanadel/EN/refs/heads/main/links/Teal-MRDesign-Monogram-Logo-1.png'.freeze
     PREF_KEY       = 'MHDESIGN_SHOP_DRAWING'.freeze
     DICT           = 'MHD_SHOP_DRAWING'.freeze
     SCENE_PREFIX   = 'MHD SHOP'.freeze
