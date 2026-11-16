@@ -2116,7 +2116,7 @@ body { background: var(--ref-bg); color: var(--ref-text); padding: 6px; font: 12
   end
 
   AUTO_OPTIONS_PREF_KEY = "auto_open_component_options"
-  ACCOUNT_LOGO_URL = "https://mhdesign-eg.com/SKETCHUP/components/logo3.png"
+  ACCOUNT_LOGO_URL = "https://raw.githubusercontent.com/eng-marwanadel/EN/refs/heads/main/links/logo3.png"
 
   ACCOUNT_TEXTS = {
     "ar" => {

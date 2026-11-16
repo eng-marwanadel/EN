@@ -358,7 +358,7 @@ module MHDESIGN
   module PremiumComponentOptions
 
     DC_DICT  = "dynamic_attributes"
-    LOGO_URL = "https://mhdesign-eg.com/SKETCHUP/components/logo3.png"
+    LOGO_URL = "https://raw.githubusercontent.com/eng-marwanadel/EN/refs/heads/main/links/logo3.png"
 
     # خامات شريط الحرف التي تتبع شكل خامة الضلفة أو الشاسيه.
     DOOR_BAND_MATERIAL_NAMES = [

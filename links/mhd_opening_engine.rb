@@ -367,7 +367,7 @@ module MHD_Opening_Engine_V26_LIVE_WALL_SELECTION
   DICT = "MHD_ROOM_BUILDER"
   OPENINGS_KEY = "OPENINGS_JSON"
   EPS_CM = 0.05
-  LOGO_URL = 'https://mhdesign-eg.com/SKETCHUP/components/logo3.png'
+  LOGO_URL = 'https://raw.githubusercontent.com/eng-marwanadel/EN/refs/heads/main/links/logo3.png'
   PREF_KEY = 'MHD_OPENING_ENGINE_V26_UI'
 
   def uuid
@@ -1110,7 +1110,7 @@ module MHD_Final_Merge_Test
   DIRECTION_DOT = 0.985
 
   MERGE_PREF_KEY = "MHD_FINAL_MERGE_UI"
-  MERGE_LOGO_URL = "https://mhdesign-eg.com/SKETCHUP/components/logo3.png"
+  MERGE_LOGO_URL = "https://raw.githubusercontent.com/eng-marwanadel/EN/refs/heads/main/links/logo3.png"
   DEFAULT_MERGED_NAME = MHDESIGN_MERGE_LANG.t("وحدة مدمجة")
   CONFIRMED_CHASSIS_THICKNESS_CM = 1.8
 
@@ -4924,7 +4924,7 @@ module MHD_WALL_SURVEY_V1
   ITEMS_KEY = 'SURVEY_ITEMS_JSON'
   PREF_KEY = 'MHD_WALL_SURVEY_V1_UI'
   EPS_CM = 0.05
-  LOGO_URL = 'https://mhdesign-eg.com/SKETCHUP/components/logo3.png'
+  LOGO_URL = 'https://raw.githubusercontent.com/eng-marwanadel/EN/refs/heads/main/links/logo3.png'
 
   def menu_draw;tr('SURVEY_MENU_DRAW','رسم المعاينة');end
   def menu_clear;tr('SURVEY_MENU_CLEAR','حذف عناصر المعاينة من الحائط');end

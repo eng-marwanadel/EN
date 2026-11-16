@@ -122,7 +122,7 @@ module MHDESIGN
     UNIT_LEVEL_NAME_KEY = 'unit_level_name'.freeze
     UNIT_LEVEL_ISOLATION_KEY = 'unit_level_geometry_isolation'.freeze
     PREF_KEY = 'materials_folder'.freeze
-    LOGO_URL = 'https://mhdesign-eg.com/SKETCHUP/components/logo3.png'.freeze
+    LOGO_URL = 'https://raw.githubusercontent.com/eng-marwanadel/EN/refs/heads/main/links/logo3.png'.freeze
     SUPPORTED_IMAGES = %w[.jpg .jpeg .png .bmp .tif .tiff].freeze
 
     MATERIAL_TARGETS = {
